@@ -263,9 +263,7 @@ class CombinedExtractor(BaseFeaturesExtractor):
                 total_concat_size += get_flattened_obs_dim(subspace)
 
         self.extractors = nn.ModuleDict(extractors)
-
         # Update the features dim manually
-
         self._features_dim = total_concat_size
 
 
