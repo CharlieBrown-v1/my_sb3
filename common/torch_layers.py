@@ -265,6 +265,7 @@ class CombinedExtractor(BaseFeaturesExtractor):
         self.extractors = nn.ModuleDict(extractors)
 
         # Update the features dim manually
+
         self._features_dim = total_concat_size
 
 
