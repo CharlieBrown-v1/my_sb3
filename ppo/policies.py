@@ -4,6 +4,7 @@ from stable_baselines3.common.policies import (
     ActorCriticCnnPolicy,
     ActorCriticPolicy,
     MultiInputActorCriticPolicy,
+    HybridPolicy,
     register_policy,
 )
 
@@ -14,3 +15,6 @@ MultiInputPolicy = MultiInputActorCriticPolicy
 register_policy("MlpPolicy", ActorCriticPolicy)
 register_policy("CnnPolicy", ActorCriticCnnPolicy)
 register_policy("MultiInputPolicy", MultiInputPolicy)
+
+# DIY
+register_policy("HybridPolicy", HybridPolicy)

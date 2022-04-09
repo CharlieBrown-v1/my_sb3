@@ -2,6 +2,7 @@ from itertools import zip_longest
 from typing import Dict, List, Tuple, Type, Union
 
 import gym
+import torch
 import torch as th
 from torch import nn
 
@@ -273,6 +274,91 @@ class CombinedExtractor(BaseFeaturesExtractor):
         for key, extractor in self.extractors.items():
             encoded_tensor_list.append(extractor(observations[key]))
         return th.cat(encoded_tensor_list, dim=1)
+
+
+# DIY
+class HybridExtractor(BaseFeaturesExtractor):
+    """
+    Hybrid feature extractor for Dict observation spaces.
+    Add CNN feature extract based on Combined feature extractor.
+    The output features are concatenated and fed through additional MLP network.
+
+    :param observation_space:
+    :param cnn_output_dim: Number of features to output from CNN module, Defaults to 64.
+    """
+
+    def __init__(self, observation_space: gym.spaces.Dict, cube_shape: list = [41, 41, 41], cnn_output_dim: int = 64):
+        # TODO we do not know features-dim here before going over all the items, so put something there. This is dirty!
+        super(HybridExtractor, self).__init__(observation_space, features_dim=1)
+
+        extractors = {}
+
+        total_concat_size = 0
+        for key, subspace in observation_space.spaces.items():
+            if key == 'observation':
+                extractors[key] = HybridNatureCNN(subspace, cube_shape=cube_shape, features_dim=cnn_output_dim)
+                total_concat_size += cnn_output_dim + extractors[key].physical_len
+            else:
+                # The observation key is a vector, flatten it if needed
+                extractors[key] = nn.Flatten()
+                total_concat_size += get_flattened_obs_dim(subspace)
+
+        self.extractors = nn.ModuleDict(extractors)
+        # Update the features dim manually
+        self._features_dim = total_concat_size
+
+
+    def forward(self, observations: TensorDict) -> th.Tensor:
+        encoded_tensor_list = []
+
+        for key, extractor in self.extractors.items():
+            encoded_tensor_list.append(extractor(observations[key]))
+        return th.cat(encoded_tensor_list, dim=1)
+
+
+# DIY
+class HybridNatureCNN(BaseFeaturesExtractor):
+    """
+        Adjustment CNN from DQN nature paper to fit ServerBotEnv:
+        :param observation_space:
+        :param features_dim: Number of features extracted.
+        This corresponds to the number of unit for the last layer.
+    """
+
+    def __init__(self, observation_space: gym.spaces.Box, cube_shape: list = [41, 41, 41], features_dim: int = 64):
+        super(HybridNatureCNN, self).__init__(observation_space, features_dim)
+        # We assume CxHxW images (channels first)
+        # Re-ordering will be done by pre-preprocessing or wrapper
+
+        self.cube_shape = cube_shape.copy()
+        self.cube_len = th.prod(th.as_tensor(cube_shape), dtype=int)
+        self.physical_len = th.as_tensor(observation_space.shape) - self.cube_len
+
+        n_input_channels = self.cube_shape[0]
+        self.cnn = nn.Sequential(
+            nn.Conv2d(n_input_channels, 32, kernel_size=8, stride=4, padding=0),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=0),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=0),
+            nn.ReLU(),
+            nn.Flatten(),
+        )
+
+        # Compute shape by doing one forward pass
+        with th.no_grad():
+            samples = observation_space.sample()[: self.cube_len].reshape([-1] + self.cube_shape)
+            n_flatten = self.cnn(th.as_tensor(samples)).shape[1]
+
+        self.linear = nn.Sequential(nn.Linear(n_flatten, features_dim), nn.ReLU())
+
+    def forward(self, observations: th.Tensor) -> th.Tensor:
+        cube_len = th.prod(th.as_tensor(self.cube_shape), dtype=int)
+        cube_latent = th.reshape(observations[:, :self.cube_len], shape=[-1] + self.cube_shape)
+        cube_hidden = self.linear(self.cnn(cube_latent))
+        physical_hidden = observations[:, self.cube_len: ]
+        hidden = th.cat([cube_hidden, physical_hidden], axis=-1)
+        return hidden
 
 
 def get_actor_critic_arch(net_arch: Union[List[int], Dict[str, List[int]]]) -> Tuple[List[int], List[int]]:
