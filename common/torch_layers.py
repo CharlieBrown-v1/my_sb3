@@ -327,34 +327,34 @@ class HybridNatureCNN(BaseFeaturesExtractor):
 
     def __init__(self, observation_space: gym.spaces.Box, cube_shape: list = [41, 41, 41], features_dim: int = 64):
         super(HybridNatureCNN, self).__init__(observation_space, features_dim)
-        # We assume CxHxW images (channels first)
+        # We assume CxLxWxH cubes
         # Re-ordering will be done by pre-preprocessing or wrapper
 
         self.cube_shape = cube_shape.copy()
         self.cube_len = th.prod(th.as_tensor(cube_shape), dtype=int)
         self.physical_len = th.as_tensor(observation_space.shape) - self.cube_len
+        self.n_input_channels = 1
 
-        n_input_channels = self.cube_shape[0]
         self.cnn = nn.Sequential(
-            nn.Conv2d(n_input_channels, 32, kernel_size=8, stride=4, padding=0),
+            nn.Conv3d(self.n_input_channels, 32, kernel_size=8, stride=4, padding=0),
             nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=0),
+            nn.Conv3d(32, 64, kernel_size=4, stride=2, padding=0),
             nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=0),
+            nn.Conv3d(64, 64, kernel_size=3, stride=1, padding=0),
             nn.ReLU(),
             nn.Flatten(),
         )
 
         # Compute shape by doing one forward pass
         with th.no_grad():
-            samples = observation_space.sample()[: self.cube_len].reshape([-1] + self.cube_shape)
+            samples = observation_space.sample()[: self.cube_len].reshape([-1, self.n_input_channels] + self.cube_shape)
             n_flatten = self.cnn(th.as_tensor(samples)).shape[1]
 
         self.linear = nn.Sequential(nn.Linear(n_flatten, features_dim), nn.ReLU())
 
     def forward(self, observations: th.Tensor) -> th.Tensor:
         cube_len = th.prod(th.as_tensor(self.cube_shape), dtype=int)
-        cube_latent = th.reshape(observations[:, :self.cube_len], shape=[-1] + self.cube_shape)
+        cube_latent = th.reshape(observations[:, :self.cube_len], shape=[-1, self.n_input_channels] + self.cube_shape)
         cube_hidden = self.linear(self.cnn(cube_latent))
         physical_hidden = observations[:, self.cube_len: ]
         hidden = th.cat([cube_hidden, physical_hidden], axis=-1)
