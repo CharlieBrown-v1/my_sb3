@@ -648,6 +648,10 @@ class DictRolloutBuffer(RolloutBuffer):
         self.observations, self.actions, self.rewards, self.advantages = None, None, None, None
         self.returns, self.episode_starts, self.values, self.log_probs = None, None, None, None
         self.generator_ready = False
+
+        # DIY
+        self.success_rates = None
+
         self.reset()
 
     def reset(self) -> None:
@@ -663,6 +667,10 @@ class DictRolloutBuffer(RolloutBuffer):
         self.log_probs = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.advantages = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.generator_ready = False
+
+        # DIY
+        self.success_rates = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+
         super(RolloutBuffer, self).reset()
 
     def add(
@@ -673,6 +681,7 @@ class DictRolloutBuffer(RolloutBuffer):
         episode_start: np.ndarray,
         value: th.Tensor,
         log_prob: th.Tensor,
+        success_rate: np.ndarray,
     ) -> None:
         """
         :param obs: Observation
@@ -683,6 +692,7 @@ class DictRolloutBuffer(RolloutBuffer):
             following the current policy.
         :param log_prob: log probability of the action
             following the current policy.
+        :param info: information
         """
         if len(log_prob.shape) == 0:
             # Reshape 0-d tensor to avoid error
@@ -701,6 +711,10 @@ class DictRolloutBuffer(RolloutBuffer):
         self.episode_starts[self.pos] = np.array(episode_start).copy()
         self.values[self.pos] = value.clone().cpu().numpy().flatten()
         self.log_probs[self.pos] = log_prob.clone().cpu().numpy()
+
+        # DIY
+        self.success_rates[self.pos] = np.array(success_rate).copy()
+
         self.pos += 1
         if self.pos == self.buffer_size:
             self.full = True
@@ -714,7 +728,9 @@ class DictRolloutBuffer(RolloutBuffer):
             for key, obs in self.observations.items():
                 self.observations[key] = self.swap_and_flatten(obs)
 
-            _tensor_names = ["actions", "values", "log_probs", "advantages", "returns"]
+            # DIY
+            _tensor_names = ["actions", "values", "log_probs", "advantages", "returns",
+                             "success_rates"]
 
             for tensor in _tensor_names:
                 self.__dict__[tensor] = self.swap_and_flatten(self.__dict__[tensor])
@@ -738,4 +754,5 @@ class DictRolloutBuffer(RolloutBuffer):
             old_log_prob=self.to_torch(self.log_probs[batch_inds].flatten()),
             advantages=self.to_torch(self.advantages[batch_inds].flatten()),
             returns=self.to_torch(self.returns[batch_inds].flatten()),
+            success_rates=self.to_torch(self.success_rates[batch_inds].flatten()),
         )

@@ -180,6 +180,11 @@ class PPO(OnPolicyAlgorithm):
         pg_losses, value_losses = [], []
         clip_fractions = []
 
+        # DIY
+        estimate_loss_list = []
+        success_rate_pred_list = []
+
+
         continue_training = True
 
         # train for n_epochs epochs
@@ -237,7 +242,17 @@ class PPO(OnPolicyAlgorithm):
 
                 entropy_losses.append(entropy_loss.item())
 
-                loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
+                # DIY
+                success_rates_pred = self.policy.evaluate_observations(rollout_data.observations)
+                success_rates_pred = success_rates_pred.flatten()
+                success_rates = rollout_data.success_rates
+                estimate_loss = F.mse_loss(success_rates_pred, success_rates)
+                estimate_loss_list.append(estimate_loss.item())
+                success_rate_pred_list.append(success_rates_pred.detach().numpy())
+
+                # DIY
+                loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss\
+                       + self.vf_coef * estimate_loss
 
                 # Calculate approximate form of reverse KL Divergence for early stopping
                 # see issue #417: https://github.com/DLR-RM/stable-baselines3/issues/417
@@ -271,6 +286,11 @@ class PPO(OnPolicyAlgorithm):
         self.logger.record("train/entropy_loss", np.mean(entropy_losses))
         self.logger.record("train/policy_gradient_loss", np.mean(pg_losses))
         self.logger.record("train/value_loss", np.mean(value_losses))
+
+        # DIY
+        self.logger.record("train/estimate_loss", np.mean(estimate_loss_list))
+        self.logger.record("train/predict_success_rate", np.mean(success_rate_pred_list))
+
         self.logger.record("train/approx_kl", np.mean(approx_kl_divs))
         self.logger.record("train/clip_fraction", np.mean(clip_fractions))
         self.logger.record("train/loss", loss.item())
