@@ -118,6 +118,10 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             gae_lambda=self.gae_lambda,
             n_envs=self.n_envs,
         )
+
+        # DIY
+        self.is_dict_buffer = isinstance(self.rollout_buffer, DictRolloutBuffer)
+
         self.policy = self.policy_class(  # pytype:disable=not-instantiable
             self.observation_space,
             self.action_space,
@@ -193,8 +197,11 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 actions = actions.reshape(-1, 1)
 
             # DIY
-            success_rates = np.array([info['is_success'] for info in infos])
-            rollout_buffer.add(self._last_obs, actions, rewards, self._last_episode_starts, values, log_probs, success_rates)
+            if self.is_dict_buffer:
+                success_rates = [info['is_success'] for info in infos]
+                rollout_buffer.add(self._last_obs, actions, rewards, self._last_episode_starts, values, log_probs, success_rates)
+            else:
+                rollout_buffer.add(self._last_obs, actions, rewards, self._last_episode_starts, values, log_probs)
 
             self._last_obs = new_obs
             self._last_episode_starts = dones

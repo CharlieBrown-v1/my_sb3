@@ -28,6 +28,8 @@ class RolloutBufferSamples(NamedTuple):
     old_log_prob: th.Tensor
     advantages: th.Tensor
     returns: th.Tensor
+
+    # DIY
     success_rates: th.Tensor
 
 
@@ -38,6 +40,8 @@ class DictRolloutBufferSamples(RolloutBufferSamples):
     old_log_prob: th.Tensor
     advantages: th.Tensor
     returns: th.Tensor
+
+    # DIY
     success_rates: th.Tensor
 
 

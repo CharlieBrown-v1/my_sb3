@@ -7,7 +7,7 @@ from gym import spaces
 from torch.nn import functional as F
 
 from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
-from stable_baselines3.common.policies import ActorCriticPolicy
+from stable_baselines3.common.policies import ActorCriticPolicy, HybridPolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import explained_variance, get_schedule_fn
 
@@ -66,7 +66,7 @@ class PPO(OnPolicyAlgorithm):
 
     def __init__(
         self,
-        policy: Union[str, Type[ActorCriticPolicy]],
+        policy: Union[str, Union[Type[ActorCriticPolicy], Type[HybridPolicy]]],
         env: Union[GymEnv, str],
         learning_rate: Union[float, Schedule] = 3e-4,
         n_steps: int = 2048,
@@ -151,6 +151,9 @@ class PPO(OnPolicyAlgorithm):
         if _init_setup_model:
             self._setup_model()
 
+        # DIY
+        self.is_hybrid_policy = isinstance(self.policy, HybridPolicy)
+
     def _setup_model(self) -> None:
         super(PPO, self)._setup_model()
 
@@ -181,9 +184,9 @@ class PPO(OnPolicyAlgorithm):
         clip_fractions = []
 
         # DIY
-        estimate_loss_list = []
-        success_rate_pred_list = []
-
+        if self.is_hybrid_policy:
+            estimate_loss_list = []
+            success_rate_pred_list = []
 
         continue_training = True
 
@@ -201,7 +204,12 @@ class PPO(OnPolicyAlgorithm):
                 if self.use_sde:
                     self.policy.reset_noise(self.batch_size)
 
-                values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, actions)
+                # DIY
+                if self.is_hybrid_policy:
+                    values, log_prob, entropy, success_rates_pred = self.policy.evaluate_actions(rollout_data.observations, actions)
+                else:
+                    values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, actions)
+
                 values = values.flatten()
                 # Normalize advantage
                 advantages = rollout_data.advantages
@@ -243,16 +251,18 @@ class PPO(OnPolicyAlgorithm):
                 entropy_losses.append(entropy_loss.item())
 
                 # DIY
-                success_rates_pred = self.policy.evaluate_observations(rollout_data.observations)
-                success_rates_pred = success_rates_pred.flatten()
-                success_rates = rollout_data.success_rates
-                estimate_loss = F.mse_loss(success_rates_pred, success_rates)
-                estimate_loss_list.append(estimate_loss.item())
-                success_rate_pred_list.append(success_rates_pred.detach().numpy())
+                if self.is_hybrid_policy:
+                    success_rates_pred = success_rates_pred.flatten()
+                    success_rates = rollout_data.success_rates
+                    estimate_loss = F.mse_loss(success_rates_pred, success_rates)
+                    estimate_loss_list.append(estimate_loss.item())
+                    success_rate_pred_list.append(success_rates_pred.cpu().detach().numpy())
+
+                loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
 
                 # DIY
-                loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss\
-                       + self.vf_coef * estimate_loss
+                if self.is_hybrid_policy:
+                    loss += self.vf_coef * estimate_loss
 
                 # Calculate approximate form of reverse KL Divergence for early stopping
                 # see issue #417: https://github.com/DLR-RM/stable-baselines3/issues/417
@@ -288,8 +298,9 @@ class PPO(OnPolicyAlgorithm):
         self.logger.record("train/value_loss", np.mean(value_losses))
 
         # DIY
-        self.logger.record("train/estimate_loss", np.mean(estimate_loss_list))
-        self.logger.record("train/predict_success_rate", np.mean(success_rate_pred_list))
+        if self.is_hybrid_policy:
+            self.logger.record("train/estimate_loss", np.mean(estimate_loss_list))
+            self.logger.record("train/predict_success_rate", np.mean(success_rate_pred_list))
 
         self.logger.record("train/approx_kl", np.mean(approx_kl_divs))
         self.logger.record("train/clip_fraction", np.mean(clip_fractions))

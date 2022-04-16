@@ -22,6 +22,7 @@ from stable_baselines3.common.distributions import (
     make_proba_distribution,
 )
 from stable_baselines3.common.preprocessing import get_action_dim, is_image_space, maybe_transpose, preprocess_obs
+
 # DIY
 from stable_baselines3.common.torch_layers import (
     BaseFeaturesExtractor,
@@ -32,6 +33,7 @@ from stable_baselines3.common.torch_layers import (
     NatureCNN,
     create_mlp,
 )
+
 from stable_baselines3.common.type_aliases import Schedule
 from stable_baselines3.common.utils import get_device, is_vectorized_observation, obs_as_tensor
 
@@ -904,11 +906,15 @@ class HybridPolicy(ActorCriticPolicy):
             self.estimate_net.apply(partial(self.init_weights, gain=1))
         self.optimizer = self.optimizer_class(self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)
 
-    def evaluate_observations(self, obs: th.Tensor) -> th.Tensor:
+    def evaluate_actions(self, obs: th.Tensor, actions: th.Tensor) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
         features = self.extract_features(obs)
-        _, latent_vf = self.mlp_extractor(features)
+        latent_pi, latent_vf = self.mlp_extractor(features)
+        distribution = self._get_action_dist_from_latent(latent_pi)
+        log_prob = distribution.log_prob(actions)
+        values = self.value_net(latent_vf)
         success_rates = self.estimate_net(latent_vf)
-        return success_rates
+        return values, log_prob, distribution.entropy(), success_rates
+
 
 class ContinuousCritic(BaseModel):
     """

@@ -681,7 +681,10 @@ class DictRolloutBuffer(RolloutBuffer):
         episode_start: np.ndarray,
         value: th.Tensor,
         log_prob: th.Tensor,
-        success_rate: np.ndarray,
+
+        # DIY
+        success_rate: th.Tensor,
+
     ) -> None:
         """
         :param obs: Observation
@@ -719,6 +722,58 @@ class DictRolloutBuffer(RolloutBuffer):
         if self.pos == self.buffer_size:
             self.full = True
 
+
+    # DIY
+    def compute_returns_and_advantage(self, last_values: th.Tensor, dones: np.ndarray) -> None:
+        """
+        Post-processing step: compute the lambda-return (TD(lambda) estimate)
+        and GAE(lambda) advantage.
+
+        Uses Generalized Advantage Estimation (https://arxiv.org/abs/1506.02438)
+        to compute the advantage. To obtain vanilla advantage (A(s) = R - V(S))
+        where R is the discounted reward with value bootstrap,
+        set ``gae_lambda=1.0`` during initialization.
+
+        The TD(lambda) estimator has also two special cases:
+        - TD(1) is Monte-Carlo estimate (sum of discounted rewards)
+        - TD(0) is one-step estimate with bootstrapping (r_t + gamma * v(s_{t+1}))
+
+        For more information, see discussion in https://github.com/DLR-RM/stable-baselines3/pull/375.
+
+        :param last_values: state value estimation for the last step (one for each env)
+        :param dones: if the last step was a terminal step (one bool for each env).
+
+        """
+        # Convert to numpy
+        last_values = last_values.clone().cpu().numpy().flatten()
+
+        last_gae_lam = 0
+        for step in reversed(range(self.buffer_size)):
+            if step == self.buffer_size - 1:
+                next_non_terminal = 1.0 - dones
+                next_values = last_values
+            else:
+                next_non_terminal = 1.0 - self.episode_starts[step + 1]
+                next_values = self.values[step + 1]
+            delta = self.rewards[step] + self.gamma * next_values * next_non_terminal - self.values[step]
+            last_gae_lam = delta + self.gamma * self.gae_lambda * next_non_terminal * last_gae_lam
+            self.advantages[step] = last_gae_lam
+
+            # DIY
+            is_success = self.success_rates[step][0]
+            if is_success == 1 and next_non_terminal == 0:
+                # means step is terminal, self.episode[step + 1] or dones = 1
+                tmp_step = step
+                while tmp_step >= 0 and self.episode_starts[tmp_step][0] != 1:
+                    self.success_rates[tmp_step] = is_success
+                    tmp_step -= 1
+                if tmp_step >= 0:
+                    self.success_rates[tmp_step] = is_success
+
+        # TD(lambda) estimator, see Github PR #375 or "Telescoping in TD(lambda)"
+        # in David Silver Lecture 4: https://www.youtube.com/watch?v=PnHCvfgC_ZA
+        self.returns = self.advantages + self.values
+
     def get(self, batch_size: Optional[int] = None) -> Generator[DictRolloutBufferSamples, None, None]:
         assert self.full, ""
         indices = np.random.permutation(self.buffer_size * self.n_envs)
@@ -747,6 +802,7 @@ class DictRolloutBuffer(RolloutBuffer):
 
     def _get_samples(self, batch_inds: np.ndarray, env: Optional[VecNormalize] = None) -> DictRolloutBufferSamples:
 
+        # DIY
         return DictRolloutBufferSamples(
             observations={key: self.to_torch(obs[batch_inds]) for (key, obs) in self.observations.items()},
             actions=self.to_torch(self.actions[batch_inds]),
