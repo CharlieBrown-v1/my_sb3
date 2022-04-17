@@ -253,8 +253,8 @@ class PPO(OnPolicyAlgorithm):
                 # DIY
                 if self.is_hybrid_policy:
                     success_rates_pred = success_rates_pred.flatten()
-                    success_rates = rollout_data.success_rates
-                    estimate_loss = F.mse_loss(success_rates_pred, success_rates)
+                    is_successes = rollout_data.is_successes
+                    estimate_loss = F.mse_loss(success_rates_pred, is_successes)
                     estimate_loss_list.append(estimate_loss.item())
                     success_rate_pred_list.append(success_rates_pred.cpu().detach().numpy())
 
@@ -300,7 +300,7 @@ class PPO(OnPolicyAlgorithm):
         # DIY
         if self.is_hybrid_policy:
             self.logger.record("train/estimate_loss", np.mean(estimate_loss_list))
-            self.logger.record("train/predict_success_rate", np.mean(success_rate_pred_list))
+            self.logger.record("train/predict_is_success", np.mean(success_rate_pred_list))
 
         self.logger.record("train/approx_kl", np.mean(approx_kl_divs))
         self.logger.record("train/clip_fraction", np.mean(clip_fractions))

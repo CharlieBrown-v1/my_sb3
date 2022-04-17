@@ -198,8 +198,8 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
             # DIY
             if self.is_dict_buffer:
-                success_rates = [info['is_success'] for info in infos]
-                rollout_buffer.add(self._last_obs, actions, rewards, self._last_episode_starts, values, log_probs, success_rates)
+                is_successes = [info['is_success'] for info in infos]
+                rollout_buffer.add(self._last_obs, actions, rewards, self._last_episode_starts, values, log_probs, is_successes)
             else:
                 rollout_buffer.add(self._last_obs, actions, rewards, self._last_episode_starts, values, log_probs)
 
@@ -269,7 +269,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                     self.logger.record("rollout/ep_len_mean",
                                        safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
                     if len(self.ep_success_buffer) > 0:
-                        self.logger.record("rollout/success_rate", safe_mean(self.ep_success_buffer))
+                        self.logger.record("rollout/is_success", safe_mean(self.ep_success_buffer))
                 self.logger.record("time/fps", fps)
                 self.logger.record("time/time_elapsed", int(time.time() - self.start_time), exclude="tensorboard")
                 self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")

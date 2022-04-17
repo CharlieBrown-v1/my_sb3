@@ -30,7 +30,7 @@ class RolloutBufferSamples(NamedTuple):
     returns: th.Tensor
 
     # DIY
-    success_rates: th.Tensor
+    is_successes: th.Tensor
 
 
 class DictRolloutBufferSamples(RolloutBufferSamples):
@@ -42,7 +42,7 @@ class DictRolloutBufferSamples(RolloutBufferSamples):
     returns: th.Tensor
 
     # DIY
-    success_rates: th.Tensor
+    is_successes: th.Tensor
 
 
 class ReplayBufferSamples(NamedTuple):

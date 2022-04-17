@@ -912,8 +912,8 @@ class HybridPolicy(ActorCriticPolicy):
         distribution = self._get_action_dist_from_latent(latent_pi)
         log_prob = distribution.log_prob(actions)
         values = self.value_net(latent_vf)
-        success_rates = self.estimate_net(latent_vf)
-        return values, log_prob, distribution.entropy(), success_rates
+        is_successes = self.estimate_net(latent_vf)
+        return values, log_prob, distribution.entropy(), is_successes
 
 
 class ContinuousCritic(BaseModel):

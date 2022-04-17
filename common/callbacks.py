@@ -417,10 +417,10 @@ class EvalCallback(EventCallback):
             self.logger.record("eval/mean_ep_length", mean_ep_length)
 
             if len(self._is_success_buffer) > 0:
-                success_rate = np.mean(self._is_success_buffer)
+                is_success = np.mean(self._is_success_buffer)
                 if self.verbose > 0:
-                    print(f"Success rate: {100 * success_rate:.2f}%")
-                self.logger.record("eval/success_rate", success_rate)
+                    print(f"Success rate: {100 * is_success:.2f}%")
+                self.logger.record("eval/is_success", is_success)
 
             # Dump log so the evaluation results are printed with the correct timestep
             self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")

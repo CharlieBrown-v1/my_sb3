@@ -650,7 +650,7 @@ class DictRolloutBuffer(RolloutBuffer):
         self.generator_ready = False
 
         # DIY
-        self.success_rates = None
+        self.is_successes = None
 
         self.reset()
 
@@ -669,7 +669,7 @@ class DictRolloutBuffer(RolloutBuffer):
         self.generator_ready = False
 
         # DIY
-        self.success_rates = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.is_successes = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
 
         super(RolloutBuffer, self).reset()
 
@@ -683,7 +683,7 @@ class DictRolloutBuffer(RolloutBuffer):
         log_prob: th.Tensor,
 
         # DIY
-        success_rate: th.Tensor,
+        is_success: th.Tensor,
 
     ) -> None:
         """
@@ -716,7 +716,7 @@ class DictRolloutBuffer(RolloutBuffer):
         self.log_probs[self.pos] = log_prob.clone().cpu().numpy()
 
         # DIY
-        self.success_rates[self.pos] = np.array(success_rate).copy()
+        self.is_successes[self.pos] = np.array(is_success).copy()
 
         self.pos += 1
         if self.pos == self.buffer_size:
@@ -748,6 +748,19 @@ class DictRolloutBuffer(RolloutBuffer):
         last_values = last_values.clone().cpu().numpy().flatten()
 
         last_gae_lam = 0
+
+        # DIY
+        tmp_episode_starts = np.r_[self.episode_starts, dones.reshape(1, -1)]
+        total_episode_starts_idx_list = [np.where(tmp_episode_starts[:, env_id])[0] for env_id in np.arange(self.n_envs)]
+        total_episode_starts_idx_dict = {}.fromkeys(np.arange(self.n_envs), None)
+        for env_id in np.arange(self.n_envs):
+             single_episode_starts_idx_dict = {}.fromkeys(total_episode_starts_idx_list[env_id], 0)
+             for i in np.arange(1, total_episode_starts_idx_list[env_id].size):
+                 idx = total_episode_starts_idx_list[env_id][i]
+                 single_episode_starts_idx_dict[idx] = total_episode_starts_idx_list[env_id][i - 1]
+             total_episode_starts_idx_dict[env_id] = single_episode_starts_idx_dict
+        tmp_is_successes = self.is_successes.copy()
+
         for step in reversed(range(self.buffer_size)):
             if step == self.buffer_size - 1:
                 next_non_terminal = 1.0 - dones
@@ -760,15 +773,16 @@ class DictRolloutBuffer(RolloutBuffer):
             self.advantages[step] = last_gae_lam
 
             # DIY
-            is_success = self.success_rates[step][0]
-            if is_success == 1 and next_non_terminal == 0:
-                # means step is terminal, self.episode[step + 1] or dones = 1
-                tmp_step = step
-                while tmp_step >= 0 and self.episode_starts[tmp_step][0] != 1:
-                    self.success_rates[tmp_step] = is_success
-                    tmp_step -= 1
-                if tmp_step >= 0:
-                    self.success_rates[tmp_step] = is_success
+            is_success = self.is_successes[step]
+            success_env_id_tuple = np.where(is_success == 1)
+            for success_env_id in success_env_id_tuple:
+                if success_env_id.size > 0:
+                    # step -> terminal state
+                    start_idx = total_episode_starts_idx_dict[success_env_id[0]][step + 1]
+                    tmp_is_successes[start_idx: step + 1, success_env_id] = 1
+
+        # DIY
+        self.is_successes = tmp_is_successes
 
         # TD(lambda) estimator, see Github PR #375 or "Telescoping in TD(lambda)"
         # in David Silver Lecture 4: https://www.youtube.com/watch?v=PnHCvfgC_ZA
@@ -785,7 +799,7 @@ class DictRolloutBuffer(RolloutBuffer):
 
             # DIY
             _tensor_names = ["actions", "values", "log_probs", "advantages", "returns",
-                             "success_rates"]
+                             "is_successes"]
 
             for tensor in _tensor_names:
                 self.__dict__[tensor] = self.swap_and_flatten(self.__dict__[tensor])
@@ -810,5 +824,5 @@ class DictRolloutBuffer(RolloutBuffer):
             old_log_prob=self.to_torch(self.log_probs[batch_inds].flatten()),
             advantages=self.to_torch(self.advantages[batch_inds].flatten()),
             returns=self.to_torch(self.returns[batch_inds].flatten()),
-            success_rates=self.to_torch(self.success_rates[batch_inds].flatten()),
+            is_successes=self.to_torch(self.is_successes[batch_inds].flatten()),
         )
