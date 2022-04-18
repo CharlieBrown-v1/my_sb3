@@ -277,6 +277,9 @@ class CombinedExtractor(BaseFeaturesExtractor):
 
 
 # DIY
+default_cube_shape = [21, 21, 21]
+
+# DIY
 class HybridExtractor(BaseFeaturesExtractor):
     """
     Hybrid feature extractor for Dict observation spaces.
@@ -287,7 +290,7 @@ class HybridExtractor(BaseFeaturesExtractor):
     :param cnn_output_dim: Number of features to output from CNN module, Defaults to 64.
     """
 
-    def __init__(self, observation_space: gym.spaces.Dict, cube_shape: list = [41, 41, 41], cnn_output_dim: int = 64):
+    def __init__(self, observation_space: gym.spaces.Dict, cube_shape: list = default_cube_shape, cnn_output_dim: int = 64):
         # TODO we do not know features-dim here before going over all the items, so put something there. This is dirty!
         super(HybridExtractor, self).__init__(observation_space, features_dim=1)
 
@@ -315,7 +318,6 @@ class HybridExtractor(BaseFeaturesExtractor):
             encoded_tensor_list.append(extractor(observations[key]))
         return th.cat(encoded_tensor_list, dim=1)
 
-
 # DIY
 class HybridNatureCNN(BaseFeaturesExtractor):
     """
@@ -325,7 +327,7 @@ class HybridNatureCNN(BaseFeaturesExtractor):
         This corresponds to the number of unit for the last layer.
     """
 
-    def __init__(self, observation_space: gym.spaces.Box, cube_shape: list = [41, 41, 41], features_dim: int = 64):
+    def __init__(self, observation_space: gym.spaces.Box, cube_shape: list = default_cube_shape, features_dim: int = 64):
         super(HybridNatureCNN, self).__init__(observation_space, features_dim)
         # We assume CxLxWxH cubes
         # Re-ordering will be done by pre-preprocessing or wrapper
@@ -340,7 +342,7 @@ class HybridNatureCNN(BaseFeaturesExtractor):
             nn.ReLU(),
             nn.Conv3d(32, 64, kernel_size=4, stride=2, padding=0),
             nn.ReLU(),
-            nn.Conv3d(64, 64, kernel_size=3, stride=1, padding=0),
+            nn.Conv3d(64, 64, kernel_size=1, stride=1, padding=0),
             nn.ReLU(),
             nn.Flatten(),
         )
