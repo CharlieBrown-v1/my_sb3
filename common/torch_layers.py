@@ -275,10 +275,6 @@ class CombinedExtractor(BaseFeaturesExtractor):
             encoded_tensor_list.append(extractor(observations[key]))
         return th.cat(encoded_tensor_list, dim=1)
 
-
-# DIY
-default_cube_shape = [21, 21, 21]
-
 # DIY
 class HybridExtractor(BaseFeaturesExtractor):
     """
@@ -290,7 +286,7 @@ class HybridExtractor(BaseFeaturesExtractor):
     :param cnn_output_dim: Number of features to output from CNN module, Defaults to 64.
     """
 
-    def __init__(self, observation_space: gym.spaces.Dict, cube_shape: list = default_cube_shape, cnn_output_dim: int = 64):
+    def __init__(self, observation_space: gym.spaces.Dict, cube_shape: list = None, cnn_output_dim: int = 64):
         # TODO we do not know features-dim here before going over all the items, so put something there. This is dirty!
         super(HybridExtractor, self).__init__(observation_space, features_dim=1)
 
@@ -298,7 +294,7 @@ class HybridExtractor(BaseFeaturesExtractor):
 
         total_concat_size = 0
         for key, subspace in observation_space.spaces.items():
-            if key == 'observation':
+            if cube_shape is not None and key == 'observation':
                 extractors[key] = HybridNatureCNN(subspace, cube_shape=cube_shape, features_dim=cnn_output_dim)
                 total_concat_size += cnn_output_dim + extractors[key].physical_len
             else:
@@ -309,7 +305,6 @@ class HybridExtractor(BaseFeaturesExtractor):
         self.extractors = nn.ModuleDict(extractors)
         # Update the features dim manually
         self._features_dim = total_concat_size
-
 
     def forward(self, observations: TensorDict) -> th.Tensor:
         encoded_tensor_list = []
@@ -327,7 +322,7 @@ class HybridNatureCNN(BaseFeaturesExtractor):
         This corresponds to the number of unit for the last layer.
     """
 
-    def __init__(self, observation_space: gym.spaces.Box, cube_shape: list = default_cube_shape, features_dim: int = 64):
+    def __init__(self, observation_space: gym.spaces.Box, cube_shape: list = None, features_dim: int = 64):
         super(HybridNatureCNN, self).__init__(observation_space, features_dim)
         # We assume CxLxWxH cubes
         # Re-ordering will be done by pre-preprocessing or wrapper
@@ -338,7 +333,7 @@ class HybridNatureCNN(BaseFeaturesExtractor):
         self.n_input_channels = 1
 
         self.cnn = nn.Sequential(
-            nn.Conv3d(self.n_input_channels, 32, kernel_size=8, stride=4, padding=0),
+            nn.Conv3d(self.n_input_channels, 32, kernel_size=4, stride=2, padding=0),
             nn.ReLU(),
             nn.Conv3d(32, 64, kernel_size=4, stride=2, padding=0),
             nn.ReLU(),
