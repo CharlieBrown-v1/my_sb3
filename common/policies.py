@@ -915,6 +915,17 @@ class HybridPolicy(ActorCriticPolicy):
         is_successes = self.estimate_net(latent_vf)
         return values, log_prob, distribution.entropy(), is_successes
 
+    def estimate_observation(self,
+                              observation: Union[np.ndarray, Dict[str, np.ndarray]],
+                              ):
+        self.set_training_mode(False)
+
+        observation, vectorized_env = self.obs_to_tensor(observation)
+        features = self.extract_features(observation)
+        latent_pi, latent_vf = self.mlp_extractor(features)
+        success_rate = self.estimate_net(latent_vf).flatten()
+
+        return success_rate
 
 class ContinuousCritic(BaseModel):
     """
