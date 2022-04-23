@@ -153,6 +153,7 @@ class PPO(OnPolicyAlgorithm):
 
         # DIY
         self.is_hybrid_policy = isinstance(self.policy, HybridPolicy)
+        self.success_rate_threshold = 0.9
 
     def _setup_model(self) -> None:
         super(PPO, self)._setup_model()
@@ -185,8 +186,8 @@ class PPO(OnPolicyAlgorithm):
 
         # DIY
         if self.is_hybrid_policy:
+            estimate_right_rate_list = []
             estimate_loss_list = []
-            success_rate_pred_list = []
 
         continue_training = True
 
@@ -255,8 +256,10 @@ class PPO(OnPolicyAlgorithm):
                     success_rates_pred = success_rates_pred.flatten()
                     is_successes = rollout_data.is_successes
                     estimate_loss = F.mse_loss(success_rates_pred, is_successes)
+                    indicate_success_rates = th.where(success_rates_pred <= self.success_rate_threshold, success_rates_pred, th.as_tensor(1, dtype=th.float32))
+                    indicate_success_rates = th.where(success_rates_pred > self.success_rate_threshold, success_rates_pred, th.as_tensor(0, dtype=th.float32))
+                    estimate_right_rate_list.append(th.mean(indicate_success_rates == is_successes, dtype=th.float32).cpu().detach().numpy().item())
                     estimate_loss_list.append(estimate_loss.item())
-                    success_rate_pred_list.append(success_rates_pred.cpu().detach().numpy())
 
                 loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
 
@@ -299,8 +302,8 @@ class PPO(OnPolicyAlgorithm):
 
         # DIY
         if self.is_hybrid_policy:
+            self.logger.record("train/estimate_right_rate", np.mean(estimate_right_rate_list))
             self.logger.record("train/estimate_loss", np.mean(estimate_loss_list))
-            self.logger.record("train/predict_is_success", np.mean(success_rate_pred_list))
 
         self.logger.record("train/approx_kl", np.mean(approx_kl_divs))
         self.logger.record("train/clip_fraction", np.mean(clip_fractions))
