@@ -153,7 +153,7 @@ class PPO(OnPolicyAlgorithm):
 
         # DIY
         self.is_hybrid_policy = isinstance(self.policy, HybridPolicy)
-        self.success_rate_threshold = 0.9
+        self.success_rate_threshold = 0.5
 
     def _setup_model(self) -> None:
         super(PPO, self)._setup_model()
@@ -185,6 +185,7 @@ class PPO(OnPolicyAlgorithm):
         clip_fractions = []
 
         # DIY
+        is_estimate_training = False
         if self.is_hybrid_policy:
             estimate_right_rate_list = []
             estimate_loss_list = []
@@ -252,19 +253,23 @@ class PPO(OnPolicyAlgorithm):
                 entropy_losses.append(entropy_loss.item())
 
                 # DIY
-                if self.is_hybrid_policy:
+                judge_is_successes = rollout_data.is_successes.cpu().detach().numpy()
+                if np.all(judge_is_successes.mean() > self.success_rate_threshold):
+                    is_estimate_training = True
+
+                if is_estimate_training and self.is_hybrid_policy:
                     success_rates_pred = success_rates_pred.flatten()
                     is_successes = rollout_data.is_successes
                     estimate_loss = F.mse_loss(success_rates_pred, is_successes)
-                    indicate_success_rates = th.where(success_rates_pred <= self.success_rate_threshold, success_rates_pred, th.as_tensor(1, dtype=th.float32))
-                    indicate_success_rates = th.where(success_rates_pred > self.success_rate_threshold, success_rates_pred, th.as_tensor(0, dtype=th.float32))
-                    estimate_right_rate_list.append(th.mean(indicate_success_rates == is_successes, dtype=th.float32).cpu().detach().numpy().item())
+                    indicate_success_rates = th.where(success_rates_pred <= th.as_tensor(self.success_rate_threshold).to(self.device), success_rates_pred, th.as_tensor(1, dtype=th.float32).to(self.device))
+                    indicate_success_rates = th.where(success_rates_pred > th.as_tensor(self.success_rate_threshold).to(self.device), success_rates_pred, th.as_tensor(0, dtype=th.float32).to(self.device))
+                    estimate_right_rate_list.append(th.mean(th.as_tensor(indicate_success_rates == is_successes, dtype=th.float32)).cpu().detach().numpy().item())
                     estimate_loss_list.append(estimate_loss.item())
 
                 loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
 
                 # DIY
-                if self.is_hybrid_policy:
+                if is_estimate_training and self.is_hybrid_policy:
                     loss += self.vf_coef * estimate_loss
 
                 # Calculate approximate form of reverse KL Divergence for early stopping
@@ -301,7 +306,7 @@ class PPO(OnPolicyAlgorithm):
         self.logger.record("train/value_loss", np.mean(value_losses))
 
         # DIY
-        if self.is_hybrid_policy:
+        if is_estimate_training and self.is_hybrid_policy:
             self.logger.record("train/estimate_right_rate", np.mean(estimate_right_rate_list))
             self.logger.record("train/estimate_loss", np.mean(estimate_loss_list))
 
