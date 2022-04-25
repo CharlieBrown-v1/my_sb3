@@ -153,7 +153,7 @@ class PPO(OnPolicyAlgorithm):
 
         # DIY
         self.is_hybrid_policy = isinstance(self.policy, HybridPolicy)
-        self.success_rate_threshold = 0.5
+        self.success_rate_threshold = 0.9
 
     def _setup_model(self) -> None:
         super(PPO, self)._setup_model()
