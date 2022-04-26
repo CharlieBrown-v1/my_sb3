@@ -45,6 +45,12 @@ class DictRolloutBufferSamples(RolloutBufferSamples):
     is_successes: th.Tensor
 
 
+# DIY
+class EstimateBufferSamples(NamedTuple):
+    lose_observations: TensorDict
+    success_observations: TensorDict
+
+
 class ReplayBufferSamples(NamedTuple):
     observations: th.Tensor
     actions: th.Tensor

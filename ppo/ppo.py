@@ -65,30 +65,32 @@ class PPO(OnPolicyAlgorithm):
     """
 
     def __init__(
-        self,
-        policy: Union[str, Union[Type[ActorCriticPolicy], Type[HybridPolicy]]],
-        env: Union[GymEnv, str],
-        learning_rate: Union[float, Schedule] = 3e-4,
-        n_steps: int = 2048,
-        batch_size: int = 64,
-        n_epochs: int = 10,
-        gamma: float = 0.99,
-        gae_lambda: float = 0.95,
-        clip_range: Union[float, Schedule] = 0.2,
-        clip_range_vf: Union[None, float, Schedule] = None,
-        ent_coef: float = 0.0,
-        vf_coef: float = 0.5,
-        max_grad_norm: float = 0.5,
-        use_sde: bool = False,
-        sde_sample_freq: int = -1,
-        target_kl: Optional[float] = None,
-        tensorboard_log: Optional[str] = None,
-        create_eval_env: bool = False,
-        policy_kwargs: Optional[Dict[str, Any]] = None,
-        verbose: int = 0,
-        seed: Optional[int] = None,
-        device: Union[th.device, str] = "auto",
-        _init_setup_model: bool = True,
+            self,
+            policy: Union[str, Union[Type[ActorCriticPolicy], Type[HybridPolicy]]],
+            env: Union[GymEnv, str],
+            learning_rate: Union[float, Schedule] = 3e-4,
+            n_steps: int = 2048,
+            batch_size: int = 64,
+            n_epochs: int = 10,
+            gamma: float = 0.99,
+            gae_lambda: float = 0.95,
+            clip_range: Union[float, Schedule] = 0.2,
+            clip_range_vf: Union[None, float, Schedule] = None,
+            ent_coef: float = 0.0,
+            vf_coef: float = 0.5,
+            max_grad_norm: float = 0.5,
+            use_sde: bool = False,
+            sde_sample_freq: int = -1,
+            target_kl: Optional[float] = None,
+            tensorboard_log: Optional[str] = None,
+            create_eval_env: bool = False,
+            policy_kwargs: Optional[Dict[str, Any]] = None,
+            verbose: int = 0,
+            seed: Optional[int] = None,
+            device: Union[th.device, str] = "auto",
+            _init_setup_model: bool = True,
+            # DIY
+            buffer_size: int = None,
     ):
 
         super(PPO, self).__init__(
@@ -116,12 +118,13 @@ class PPO(OnPolicyAlgorithm):
                 spaces.MultiDiscrete,
                 spaces.MultiBinary,
             ),
+            buffer_size=buffer_size,
         )
 
         # Sanity check, otherwise it will lead to noisy gradient and NaN
         # because of the advantage normalization
         assert (
-            batch_size > 1
+                batch_size > 1
         ), "`batch_size` must be greater than 1. See https://github.com/DLR-RM/stable-baselines3/issues/440"
 
         if self.env is not None:
@@ -129,7 +132,7 @@ class PPO(OnPolicyAlgorithm):
             # when doing advantage normalization
             buffer_size = self.env.num_envs * self.n_steps
             assert (
-                buffer_size > 1
+                    buffer_size > 1
             ), f"`n_steps * n_envs` must be greater than 1. Currently n_steps={self.n_steps} and n_envs={self.env.num_envs}"
             # Check that the rollout buffer size is a multiple of the mini-batch size
             untruncated_batches = buffer_size // batch_size
@@ -154,6 +157,7 @@ class PPO(OnPolicyAlgorithm):
         # DIY
         self.is_hybrid_policy = isinstance(self.policy, HybridPolicy)
         self.success_rate_threshold = 0.5
+        self.start_estimate_training = False
 
     def _setup_model(self) -> None:
         super(PPO, self)._setup_model()
@@ -184,12 +188,6 @@ class PPO(OnPolicyAlgorithm):
         pg_losses, value_losses = [], []
         clip_fractions = []
 
-        # DIY
-        is_estimate_training = False
-        if self.is_hybrid_policy:
-            estimate_right_rate_list = []
-            estimate_loss_list = []
-
         continue_training = True
 
         # train for n_epochs epochs
@@ -208,7 +206,8 @@ class PPO(OnPolicyAlgorithm):
 
                 # DIY
                 if self.is_hybrid_policy:
-                    values, log_prob, entropy, success_rates_pred = self.policy.evaluate_actions(rollout_data.observations, actions)
+                    values, log_prob, entropy, success_rates_pred = self.policy.evaluate_actions(
+                        rollout_data.observations, actions)
                 else:
                     values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, actions)
 
@@ -254,23 +253,11 @@ class PPO(OnPolicyAlgorithm):
 
                 # DIY
                 judge_is_successes = rollout_data.is_successes.cpu().detach().numpy()
-                if np.all(judge_is_successes.mean() > self.success_rate_threshold):
-                    is_estimate_training = True
-
-                if is_estimate_training and self.is_hybrid_policy:
-                    success_rates_pred = success_rates_pred.flatten()
-                    is_successes = rollout_data.is_successes
-                    estimate_loss = F.mse_loss(success_rates_pred, is_successes)
-                    indicate_success_rates = th.where(success_rates_pred <= th.as_tensor(self.success_rate_threshold).to(self.device), success_rates_pred, th.as_tensor(1, dtype=th.float32).to(self.device))
-                    indicate_success_rates = th.where(success_rates_pred > th.as_tensor(self.success_rate_threshold).to(self.device), success_rates_pred, th.as_tensor(0, dtype=th.float32).to(self.device))
-                    estimate_right_rate_list.append(th.mean(th.as_tensor(indicate_success_rates == is_successes, dtype=th.float32)).cpu().detach().numpy().item())
-                    estimate_loss_list.append(estimate_loss.item())
+                if np.all(judge_is_successes.mean() > self.success_rate_threshold)\
+                        and np.all(self.estimate_buffer.full):
+                    self.start_estimate_training = True
 
                 loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
-
-                # DIY
-                if is_estimate_training and self.is_hybrid_policy:
-                    loss += self.vf_coef * estimate_loss
 
                 # Calculate approximate form of reverse KL Divergence for early stopping
                 # see issue #417: https://github.com/DLR-RM/stable-baselines3/issues/417
@@ -305,11 +292,6 @@ class PPO(OnPolicyAlgorithm):
         self.logger.record("train/policy_gradient_loss", np.mean(pg_losses))
         self.logger.record("train/value_loss", np.mean(value_losses))
 
-        # DIY
-        if is_estimate_training and self.is_hybrid_policy:
-            self.logger.record("train/estimate_right_rate", np.mean(estimate_right_rate_list))
-            self.logger.record("train/estimate_loss", np.mean(estimate_loss_list))
-
         self.logger.record("train/approx_kl", np.mean(approx_kl_divs))
         self.logger.record("train/clip_fraction", np.mean(clip_fractions))
         self.logger.record("train/loss", loss.item())
@@ -322,19 +304,60 @@ class PPO(OnPolicyAlgorithm):
         if self.clip_range_vf is not None:
             self.logger.record("train/clip_range_vf", clip_range_vf)
 
+    def train_estimate(self) -> None:
+        assert self.start_estimate_training and self.is_hybrid_policy
+        self.policy.set_training_mode(True)
+        self._update_learning_rate(self.policy.optimizer)
+
+        estimate_right_rate_list = []
+        estimate_loss_list = []
+
+        # train for n_epochs epochs
+        for epoch in range(self.n_epochs):
+            estimate_observations = self.estimate_buffer.sample(batch_size=self.batch_size, env=self.env)
+            lose_observations = estimate_observations.lose_observations
+            success_observations = estimate_observations.success_observations
+            is_successes = th.zeros(self.batch_size * 2)
+            is_successes[self.batch_size:] = th.as_tensor(1, dtype=th.float32).to(self.device)
+            lose_pred = self.policy.estimate_observations(lose_observations).reshape(1, -1)
+            success_pred = self.policy.estimate_observations(success_observations).reshape(1, -1)
+            success_rates_pred = th.cat([lose_pred, success_pred], 1).flatten()
+            estimate_loss = F.mse_loss(success_rates_pred, is_successes)
+            indicate_success_rates = th.where(
+                success_rates_pred <= th.as_tensor(self.success_rate_threshold).to(self.device),
+                success_rates_pred, th.as_tensor(1, dtype=th.float32).to(self.device))
+            indicate_success_rates = th.where(
+                success_rates_pred > th.as_tensor(self.success_rate_threshold).to(self.device),
+                indicate_success_rates, th.as_tensor(0, dtype=th.float32).to(self.device))
+
+            estimate_right_rate_list.append(th.mean(th.as_tensor(indicate_success_rates == is_successes,
+                                                                 dtype=th.float32)).cpu().detach().numpy().item())
+            estimate_loss_list.append(estimate_loss.item())
+            loss = self.vf_coef * estimate_loss
+
+            # Optimization step
+            self.policy.optimizer.zero_grad()
+            loss.backward()
+            # Clip grad norm
+            th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+            self.policy.optimizer.step()
+
+        self.logger.record("train/estimate_right_rate", np.mean(estimate_right_rate_list))
+        self.logger.record("train/estimate_loss", np.mean(estimate_loss_list))
+
     def learn(
-        self,
-        total_timesteps: int,
-        callback: MaybeCallback = None,
-        log_interval: int = 1,
-        eval_env: Optional[GymEnv] = None,
-        eval_freq: int = -1,
-        n_eval_episodes: int = 5,
-        tb_log_name: str = "PPO",
-        eval_log_path: Optional[str] = None,
-        reset_num_timesteps: bool = True,
-        save_interval: Optional[int] = None,
-        save_path: Optional[str] = None,
+            self,
+            total_timesteps: int,
+            callback: MaybeCallback = None,
+            log_interval: int = 1,
+            eval_env: Optional[GymEnv] = None,
+            eval_freq: int = -1,
+            n_eval_episodes: int = 5,
+            tb_log_name: str = "PPO",
+            eval_log_path: Optional[str] = None,
+            reset_num_timesteps: bool = True,
+            save_interval: Optional[int] = None,
+            save_path: Optional[str] = None,
     ) -> "PPO":
 
         return super(PPO, self).learn(
