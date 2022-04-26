@@ -103,7 +103,8 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
         # DIY
         self.buffer_size = buffer_size
-        self.start_estimate_training = False
+        self.start_estimate_collect = False
+        self.start_estimate_train = False
 
         if _init_setup_model:
             self._setup_model()
@@ -226,7 +227,8 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
         if self.is_hybrid_policy:
             rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
-            rollout_buffer.update_estimate_buffer(estimate_buffer=self.estimate_buffer, dones=dones)
+            if self.start_estimate_collect:
+                rollout_buffer.update_estimate_buffer(estimate_buffer=self.estimate_buffer, dones=dones)
         else:
             rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
 
@@ -244,7 +246,6 @@ class OnPolicyAlgorithm(BaseAlgorithm):
     # DIY
     def train_estimate(self) -> None:
         raise NotImplementedError
-
 
     def learn(
             self,
@@ -305,7 +306,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 self.logger.record("time/iterations", iteration)
                 self.logger.record("time/total_timesteps", self.num_timesteps)
                 self.logger.dump(step=self.num_timesteps)
-            if self.start_estimate_training:
+            if self.start_estimate_train:
                 self.train_estimate()
             self.train()
 

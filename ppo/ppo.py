@@ -157,7 +157,8 @@ class PPO(OnPolicyAlgorithm):
         # DIY
         self.is_hybrid_policy = isinstance(self.policy, HybridPolicy)
         self.success_rate_threshold = 0.5
-        self.start_estimate_training = False
+        self.start_estimate_collect = False
+        self.start_estimate_train = False
 
     def _setup_model(self) -> None:
         super(PPO, self)._setup_model()
@@ -253,9 +254,11 @@ class PPO(OnPolicyAlgorithm):
 
                 # DIY
                 judge_is_successes = rollout_data.is_successes.cpu().detach().numpy()
-                if np.all(judge_is_successes.mean() > self.success_rate_threshold)\
-                        and np.all(self.estimate_buffer.full):
-                    self.start_estimate_training = True
+                if np.all(judge_is_successes.mean() > self.success_rate_threshold):
+                    self.start_estimate_collect = True
+
+                if np.all(self.estimate_buffer.full):
+                    self.start_estimate_train = True
 
                 loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
 
@@ -305,7 +308,7 @@ class PPO(OnPolicyAlgorithm):
             self.logger.record("train/clip_range_vf", clip_range_vf)
 
     def train_estimate(self) -> None:
-        assert self.start_estimate_training and self.is_hybrid_policy
+        assert self.start_estimate_train and self.is_hybrid_policy
         self.policy.set_training_mode(True)
         self._update_learning_rate(self.policy.optimizer)
 
