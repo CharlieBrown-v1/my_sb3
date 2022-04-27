@@ -138,10 +138,10 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         self.is_dict_buffer = isinstance(self.rollout_buffer, DictRolloutBuffer)
         self.is_hybrid_policy = isinstance(self.policy, HybridPolicy)
         if self.is_hybrid_policy:
-            assert self.buffer_size is not None
-            self.estimate_buffer = EstimateBuffer(observation_space=self.observation_space,
-                                                  buffer_size=self.buffer_size,
-                                                  device=self.device)
+            if self.buffer_size is not None:
+                self.estimate_buffer = EstimateBuffer(observation_space=self.observation_space,
+                                                      buffer_size=self.buffer_size,
+                                                      device=self.device)
 
     def collect_rollouts(
             self,

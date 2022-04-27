@@ -868,28 +868,11 @@ class DictRolloutBuffer(RolloutBuffer):
 
     # DIY
     def update_estimate_buffer(self, estimate_buffer: EstimateBuffer, dones: np.ndarray) -> None:
+        # self.is_successes have been updated during compute_returns_and_advantage
         tmp_episode_starts = np.r_[self.episode_starts, dones.reshape(1, -1)]
         total_episode_starts_idx_list = [np.where(tmp_episode_starts[:, env_id])[0] for env_id in
                                          np.arange(self.n_envs)]
-        total_episode_starts_idx_dict = {}.fromkeys(np.arange(self.n_envs), None)
-        for env_id in np.arange(self.n_envs):
-            single_episode_starts_idx_dict = {}.fromkeys(total_episode_starts_idx_list[env_id], 0)
-            for i in np.arange(1, total_episode_starts_idx_list[env_id].size):
-                idx = total_episode_starts_idx_list[env_id][i]
-                single_episode_starts_idx_dict[idx] = total_episode_starts_idx_list[env_id][i - 1]
-            total_episode_starts_idx_dict[env_id] = single_episode_starts_idx_dict
-        tmp_is_successes = self.is_successes.copy()
 
-        for step in reversed(range(self.buffer_size)):
-            is_success = self.is_successes[step]
-            success_env_id_tuple = np.where(is_success == 1)
-            for success_env_id in success_env_id_tuple:
-                if success_env_id.size > 0:
-                    # step -> terminal state
-                    start_idx = total_episode_starts_idx_dict[success_env_id[0]][step + 1]
-                    tmp_is_successes[start_idx: step + 1, success_env_id] = 1
-
-        self.is_successes = tmp_is_successes
         for env_id in np.arange(self.n_envs):
             for i in np.arange(1, total_episode_starts_idx_list[env_id].size):
                 start_idx = total_episode_starts_idx_list[env_id][i - 1]
@@ -897,6 +880,11 @@ class DictRolloutBuffer(RolloutBuffer):
                 keys = self.observations.keys()
                 values = [self.observations[key][start_idx: end_idx + 1, env_id] for key in keys]
                 observations = dict(zip(self.observations.keys(), values))
+                # if np.random.uniform() < 0.5:
+                #     flag = 0
+                # else:
+                #     flag = 1
+                # estimate_buffer.add_episode(observations, flag)
                 estimate_buffer.add_episode(observations, self.is_successes[end_idx, env_id])
 
     def get(self, batch_size: Optional[int] = None) -> Generator[DictRolloutBufferSamples, None, None]:

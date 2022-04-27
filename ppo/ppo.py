@@ -157,8 +157,6 @@ class PPO(OnPolicyAlgorithm):
         # DIY
         self.is_hybrid_policy = isinstance(self.policy, HybridPolicy)
         self.success_rate_threshold = 0.5
-        self.start_estimate_collect = False
-        self.start_estimate_train = False
 
     def _setup_model(self) -> None:
         super(PPO, self)._setup_model()
@@ -257,7 +255,7 @@ class PPO(OnPolicyAlgorithm):
                 if np.all(judge_is_successes.mean() > self.success_rate_threshold):
                     self.start_estimate_collect = True
 
-                if np.all(self.estimate_buffer.full):
+                if self.buffer_size is not None and np.all(self.estimate_buffer.full):
                     self.start_estimate_train = True
 
                 loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
