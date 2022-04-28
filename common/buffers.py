@@ -794,7 +794,7 @@ class DictRolloutBuffer(RolloutBuffer):
         self.log_probs[self.pos] = log_prob.clone().cpu().numpy()
 
         # DIY
-        self.is_successes[self.pos] = np.array(is_success).copy()
+        self.is_successes[self.pos] = is_success.detach().cpu().numpy()
 
         self.pos += 1
         if self.pos == self.buffer_size:
