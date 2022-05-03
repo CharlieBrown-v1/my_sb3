@@ -7,7 +7,7 @@ import numpy as np
 import torch as th
 
 from stable_baselines3.common.base_class import BaseAlgorithm
-from stable_baselines3.common.buffers import DictRolloutBuffer, RolloutBuffer, EstimateBuffer
+from stable_baselines3.common.buffers import DictRolloutBuffer, RolloutBuffer
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.policies import ActorCriticPolicy, BasePolicy, HybridPolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
@@ -73,7 +73,6 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             device: Union[th.device, str] = "auto",
             _init_setup_model: bool = True,
             supported_action_spaces: Optional[Tuple[gym.spaces.Space, ...]] = None,
-            buffer_size: int = None,
     ):
 
         super(OnPolicyAlgorithm, self).__init__(
@@ -100,11 +99,6 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         self.vf_coef = vf_coef
         self.max_grad_norm = max_grad_norm
         self.rollout_buffer = None
-
-        # DIY
-        self.buffer_size = buffer_size
-        self.start_estimate_collect = False
-        self.start_estimate_train = False
 
         if _init_setup_model:
             self._setup_model()
@@ -135,13 +129,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         self.policy = self.policy.to(self.device)
 
         # DIY
-        self.is_dict_buffer = isinstance(self.rollout_buffer, DictRolloutBuffer)
         self.is_hybrid_policy = isinstance(self.policy, HybridPolicy)
-        if self.is_hybrid_policy:
-            if self.buffer_size is not None:
-                self.estimate_buffer = EstimateBuffer(observation_space=self.observation_space,
-                                                      buffer_size=self.buffer_size,
-                                                      device=self.device)
 
     def collect_rollouts(
             self,
@@ -210,7 +198,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 actions = actions.reshape(-1, 1)
 
             # DIY
-            if self.is_dict_buffer:
+            if self.is_hybrid_policy:
                 is_successes = th.as_tensor([info['is_success'] for info in infos]).to(self.device)
                 rollout_buffer.add(self._last_obs, actions, rewards, self._last_episode_starts, values, log_probs,
                                    is_successes)
@@ -225,12 +213,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             obs_tensor = obs_as_tensor(new_obs, self.device)
             _, values, _ = self.policy.forward(obs_tensor)
 
-        if self.is_hybrid_policy:
-            rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
-            if self.start_estimate_collect:
-                rollout_buffer.update_estimate_buffer(estimate_buffer=self.estimate_buffer, dones=dones)
-        else:
-            rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
+        rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
 
         callback.on_rollout_end()
 
@@ -241,10 +224,6 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         Consume current rollout data and update policy parameters.
         Implemented by individual algorithms.
         """
-        raise NotImplementedError
-
-    # DIY
-    def train_estimate(self) -> None:
         raise NotImplementedError
 
     def learn(
@@ -306,8 +285,6 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 self.logger.record("time/iterations", iteration)
                 self.logger.record("time/total_timesteps", self.num_timesteps)
                 self.logger.dump(step=self.num_timesteps)
-            if self.start_estimate_train:
-                self.train_estimate()
             self.train()
 
         callback.on_training_end()

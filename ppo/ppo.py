@@ -89,8 +89,6 @@ class PPO(OnPolicyAlgorithm):
             seed: Optional[int] = None,
             device: Union[th.device, str] = "auto",
             _init_setup_model: bool = True,
-            # DIY
-            buffer_size: int = None,
     ):
 
         super(PPO, self).__init__(
@@ -118,7 +116,6 @@ class PPO(OnPolicyAlgorithm):
                 spaces.MultiDiscrete,
                 spaces.MultiBinary,
             ),
-            buffer_size=buffer_size,
         )
 
         # Sanity check, otherwise it will lead to noisy gradient and NaN
@@ -155,7 +152,6 @@ class PPO(OnPolicyAlgorithm):
             self._setup_model()
 
         # DIY
-        self.is_hybrid_policy = isinstance(self.policy, HybridPolicy)
         self.success_rate_threshold = 0.5
 
     def _setup_model(self) -> None:
@@ -186,6 +182,10 @@ class PPO(OnPolicyAlgorithm):
         entropy_losses = []
         pg_losses, value_losses = [], []
         clip_fractions = []
+
+        # DIY
+        estimate_losses = []
+        estimate_right_rates = []
 
         continue_training = True
 
@@ -250,15 +250,24 @@ class PPO(OnPolicyAlgorithm):
 
                 entropy_losses.append(entropy_loss.item())
 
-                # DIY
-                judge_is_successes = rollout_data.is_successes.cpu().detach().numpy()
-                if np.all(judge_is_successes.mean() > self.success_rate_threshold):
-                    self.start_estimate_collect = True
-
-                if self.buffer_size is not None and np.all(self.estimate_buffer.full):
-                    self.start_estimate_train = True
-
                 loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
+
+                # DIY
+                if self.is_hybrid_policy:
+                    success_rates_pred = success_rates_pred.flatten()
+                    estimate_loss = F.mse_loss(success_rates_pred, rollout_data.is_successes)
+                    loss += self.vf_coef * estimate_loss
+                    estimate_losses.append(estimate_loss.item())
+
+                    indicate_success_rates = th.where(
+                        success_rates_pred <= self.success_rate_threshold,
+                        success_rates_pred, th.as_tensor(1, dtype=th.float32).to(self.device))
+                    indicate_success_rates = th.where(
+                        success_rates_pred > self.success_rate_threshold,
+                        indicate_success_rates, th.as_tensor(0, dtype=th.float32).to(self.device))
+                    estimate_right_rates.append(
+                        th.mean(th.as_tensor(indicate_success_rates == rollout_data.is_successes,
+                                             dtype=th.float32)).detach().cpu().numpy().item())
 
                 # Calculate approximate form of reverse KL Divergence for early stopping
                 # see issue #417: https://github.com/DLR-RM/stable-baselines3/issues/417
@@ -293,6 +302,11 @@ class PPO(OnPolicyAlgorithm):
         self.logger.record("train/policy_gradient_loss", np.mean(pg_losses))
         self.logger.record("train/value_loss", np.mean(value_losses))
 
+        # DIY
+        if self.is_hybrid_policy:
+            self.logger.record("estimate/mse_loss", np.mean(estimate_losses))
+            self.logger.record("estimate/right_rate", np.mean(estimate_right_rates))
+
         self.logger.record("train/approx_kl", np.mean(approx_kl_divs))
         self.logger.record("train/clip_fraction", np.mean(clip_fractions))
         self.logger.record("train/loss", loss.item())
@@ -304,47 +318,6 @@ class PPO(OnPolicyAlgorithm):
         self.logger.record("train/clip_range", clip_range)
         if self.clip_range_vf is not None:
             self.logger.record("train/clip_range_vf", clip_range_vf)
-
-    def train_estimate(self) -> None:
-        assert self.start_estimate_train and self.is_hybrid_policy
-        self.policy.set_training_mode(True)
-        self._update_learning_rate(self.policy.optimizer)
-
-        estimate_right_rate_list = []
-        estimate_loss_list = []
-
-        # train for n_epochs epochs
-        for epoch in range(self.n_epochs):
-            estimate_observations = self.estimate_buffer.sample(batch_size=self.batch_size, env=self.env)
-            lose_observations = estimate_observations.lose_observations
-            success_observations = estimate_observations.success_observations
-            is_successes = th.zeros(self.batch_size * 2)
-            is_successes[self.batch_size:] = th.as_tensor(1, dtype=th.float32).to(self.device)
-            lose_pred = self.policy.estimate_observations(lose_observations).reshape(1, -1)
-            success_pred = self.policy.estimate_observations(success_observations).reshape(1, -1)
-            success_rates_pred = th.cat([lose_pred, success_pred], 1).flatten()
-            estimate_loss = F.mse_loss(success_rates_pred, is_successes)
-            indicate_success_rates = th.where(
-                success_rates_pred <= th.as_tensor(self.success_rate_threshold).to(self.device),
-                success_rates_pred, th.as_tensor(1, dtype=th.float32).to(self.device))
-            indicate_success_rates = th.where(
-                success_rates_pred > th.as_tensor(self.success_rate_threshold).to(self.device),
-                indicate_success_rates, th.as_tensor(0, dtype=th.float32).to(self.device))
-
-            estimate_right_rate_list.append(th.mean(th.as_tensor(indicate_success_rates == is_successes,
-                                                                 dtype=th.float32)).cpu().detach().numpy().item())
-            estimate_loss_list.append(estimate_loss.item())
-            loss = self.vf_coef * estimate_loss
-
-            # Optimization step
-            self.policy.optimizer.zero_grad()
-            loss.backward()
-            # Clip grad norm
-            th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
-            self.policy.optimizer.step()
-
-        self.logger.record("train/estimate_right_rate", np.mean(estimate_right_rate_list))
-        self.logger.record("train/estimate_loss", np.mean(estimate_loss_list))
 
     def learn(
             self,

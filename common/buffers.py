@@ -12,7 +12,6 @@ from stable_baselines3.common.type_aliases import (
     DictRolloutBufferSamples,
     ReplayBufferSamples,
     RolloutBufferSamples,
-    EstimateBufferSamples,
 )
 from stable_baselines3.common.vec_env import VecNormalize
 
@@ -293,79 +292,6 @@ class ReplayBuffer(BaseBuffer):
         return ReplayBufferSamples(*tuple(map(self.to_torch, data)))
 
 
-# DIY
-class EstimateBuffer:
-    def __init__(
-            self,
-            observation_space: spaces.Space,
-            buffer_size: int,
-            device: Union[th.device, str] = "cpu",
-    ):
-        self.observation_space = observation_space
-        self.obs_shape = get_obs_shape(observation_space)
-        self.buffer_size = buffer_size
-        self.device = device
-        self.full = np.array([False, False])
-        self.pos = np.array([0, 0])
-        self.observations = {}
-        for key, obs_input_shape in self.obs_shape.items():
-            self.observations[key] = np.zeros((self.buffer_size, 2) + obs_input_shape, dtype=np.float32)
-
-    def to_torch(self, array: np.ndarray, copy: bool = True) -> th.Tensor:
-        """
-        Convert a numpy array to a PyTorch tensor.
-        Note: it copies the data by default
-
-        :param array:
-        :param copy: Whether to copy or not the data
-            (may be useful to avoid changing things be reference)
-        :return:
-        """
-        if copy:
-            return th.tensor(array).to(self.device)
-        return th.as_tensor(array).to(self.device)
-
-    @staticmethod
-    def _normalize_obs(
-            obs: Union[np.ndarray, Dict[str, np.ndarray]],
-            env: Optional[VecNormalize] = None,
-    ) -> Union[np.ndarray, Dict[str, np.ndarray]]:
-        if env is not None:
-            return env.normalize_obs(obs)
-        return obs
-
-    def add_episode(
-            self,
-            observations: Dict[str, np.ndarray],
-            is_success: int,
-    ) -> None:
-        is_success = int(is_success)
-        # Copy to avoid modification by reference
-        for key in self.obs_shape.keys():
-            observation_arr = observations[key]
-            for observation in observation_arr:
-                self.observations[key][self.pos[is_success]][is_success] = observation.copy()
-
-                self.pos[is_success] += 1
-                if self.pos[is_success] == self.buffer_size:
-                    self.full[is_success] = True
-                    self.pos[is_success] = 0
-
-    def sample(self, batch_size: int, env: Optional[VecNormalize] = None):
-        assert np.all(self.full)
-        lose_batch_inds = (np.random.randint(1, self.buffer_size, size=batch_size) + self.pos[0]) % self.buffer_size
-        success_batch_inds = (np.random.randint(1, self.buffer_size, size=batch_size) + self.pos[1]) % self.buffer_size
-        return self._get_samples(lose_batch_inds, success_batch_inds, env=env)
-
-    def _get_samples(self, lose_batch_inds: np.ndarray, success_batch_inds: np.ndarray, env: Optional[VecNormalize] = None) -> EstimateBufferSamples:
-        lose_observations = {key: self.to_torch(obs[lose_batch_inds, 0]) for key, obs in self.observations.items()}
-        success_observations = {key: self.to_torch(obs[success_batch_inds, 1]) for key, obs in self.observations.items()}
-        return EstimateBufferSamples(
-            self._normalize_obs(lose_observations, env),
-            self._normalize_obs(success_observations, env),
-        )
-
-
 class RolloutBuffer(BaseBuffer):
     """
     Rollout buffer used in on-policy algorithms like A2C/PPO.
@@ -458,9 +384,6 @@ class RolloutBuffer(BaseBuffer):
         # TD(lambda) estimator, see Github PR #375 or "Telescoping in TD(lambda)"
         # in David Silver Lecture 4: https://www.youtube.com/watch?v=PnHCvfgC_ZA
         self.returns = self.advantages + self.values
-
-    def update_estimate_buffer(self, estimate_buffer: EstimateBuffer, dones: np.ndarray) -> None:
-        raise NotImplementedError
 
     def add(
             self,
@@ -761,7 +684,7 @@ class DictRolloutBuffer(RolloutBuffer):
             episode_start: np.ndarray,
             value: th.Tensor,
             log_prob: th.Tensor,
-            is_success: th.Tensor, # DIY
+            is_success: th.Tensor,  # DIY
     ) -> None:
         """
         :param obs: Observation
@@ -865,27 +788,6 @@ class DictRolloutBuffer(RolloutBuffer):
         # TD(lambda) estimator, see GitHub PR #375 or "Telescoping in TD(lambda)"
         # in David Silver Lecture 4: https://www.youtube.com/watch?v=PnHCvfgC_ZA
         self.returns = self.advantages + self.values
-
-    # DIY
-    def update_estimate_buffer(self, estimate_buffer: EstimateBuffer, dones: np.ndarray) -> None:
-        # self.is_successes have been updated during compute_returns_and_advantage
-        tmp_episode_starts = np.r_[self.episode_starts, dones.reshape(1, -1)]
-        total_episode_starts_idx_list = [np.where(tmp_episode_starts[:, env_id])[0] for env_id in
-                                         np.arange(self.n_envs)]
-
-        for env_id in np.arange(self.n_envs):
-            for i in np.arange(1, total_episode_starts_idx_list[env_id].size):
-                start_idx = total_episode_starts_idx_list[env_id][i - 1]
-                end_idx = total_episode_starts_idx_list[env_id][i] - 1
-                keys = self.observations.keys()
-                values = [self.observations[key][start_idx: end_idx + 1, env_id] for key in keys]
-                observations = dict(zip(self.observations.keys(), values))
-                # if np.random.uniform() < 0.5:
-                #     flag = 0
-                # else:
-                #     flag = 1
-                # estimate_buffer.add_episode(observations, flag)
-                estimate_buffer.add_episode(observations, self.is_successes[end_idx, env_id])
 
     def get(self, batch_size: Optional[int] = None) -> Generator[DictRolloutBufferSamples, None, None]:
         assert self.full, ""
