@@ -226,6 +226,10 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         """
         raise NotImplementedError
 
+    # DIY
+    def train_estimate(self) -> None:
+        raise NotImplementedError
+
     def learn(
             self,
             total_timesteps: int,
@@ -240,6 +244,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             save_interval: Optional[int] = None,
             save_path: Optional[str] = None,
             save_count: int = 0,
+            train_estimate_flag: bool = False,
     ) -> "OnPolicyAlgorithm":
         iteration = 0
 
@@ -277,6 +282,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
                 self.logger.dump(step=self.num_timesteps)
 
+            # DIY
             if save_interval is not None and iteration % save_interval == 0:
                 assert save_path is not None
                 save_count += 1
@@ -285,7 +291,11 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 self.logger.record("time/iterations", iteration)
                 self.logger.record("time/total_timesteps", self.num_timesteps)
                 self.logger.dump(step=self.num_timesteps)
-            self.train()
+
+            if train_estimate_flag:
+                self.train_estimate()
+            else:
+                self.train()
 
         callback.on_training_end()
 

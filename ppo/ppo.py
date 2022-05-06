@@ -183,10 +183,6 @@ class PPO(OnPolicyAlgorithm):
         pg_losses, value_losses = [], []
         clip_fractions = []
 
-        # DIY
-        estimate_losses = []
-        estimate_right_rates = []
-
         continue_training = True
 
         # train for n_epochs epochs
@@ -252,23 +248,6 @@ class PPO(OnPolicyAlgorithm):
 
                 loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
 
-                # DIY
-                if self.is_hybrid_policy:
-                    success_rates_pred = success_rates_pred.flatten()
-                    estimate_loss = F.mse_loss(success_rates_pred, rollout_data.is_successes)
-                    loss += self.vf_coef * estimate_loss
-                    estimate_losses.append(estimate_loss.item())
-
-                    indicate_success_rates = th.where(
-                        success_rates_pred <= self.success_rate_threshold,
-                        success_rates_pred, th.as_tensor(1, dtype=th.float32).to(self.device))
-                    indicate_success_rates = th.where(
-                        success_rates_pred > self.success_rate_threshold,
-                        indicate_success_rates, th.as_tensor(0, dtype=th.float32).to(self.device))
-                    estimate_right_rates.append(
-                        th.mean(th.as_tensor(indicate_success_rates == rollout_data.is_successes,
-                                             dtype=th.float32)).detach().cpu().numpy().item())
-
                 # Calculate approximate form of reverse KL Divergence for early stopping
                 # see issue #417: https://github.com/DLR-RM/stable-baselines3/issues/417
                 # and discussion in PR #419: https://github.com/DLR-RM/stable-baselines3/pull/419
@@ -302,11 +281,6 @@ class PPO(OnPolicyAlgorithm):
         self.logger.record("train/policy_gradient_loss", np.mean(pg_losses))
         self.logger.record("train/value_loss", np.mean(value_losses))
 
-        # DIY
-        if self.is_hybrid_policy:
-            self.logger.record("estimate/mse_loss", np.mean(estimate_losses))
-            self.logger.record("estimate/right_rate", np.mean(estimate_right_rates))
-
         self.logger.record("train/approx_kl", np.mean(approx_kl_divs))
         self.logger.record("train/clip_fraction", np.mean(clip_fractions))
         self.logger.record("train/loss", loss.item())
@@ -318,6 +292,51 @@ class PPO(OnPolicyAlgorithm):
         self.logger.record("train/clip_range", clip_range)
         if self.clip_range_vf is not None:
             self.logger.record("train/clip_range_vf", clip_range_vf)
+
+    # DIY
+    def train_estimate(self) -> None:
+        assert self.is_hybrid_policy
+
+        self.policy.set_training_mode(True)
+        self._update_learning_rate(self.policy.optimizer)
+
+        estimate_losses = []
+        estimate_right_rates = []
+
+        for rollout_data in self.rollout_buffer.get(self.batch_size):
+            actions = rollout_data.actions
+            if isinstance(self.action_space, spaces.Discrete):
+                # Convert discrete action from float to long
+                actions = rollout_data.actions.long().flatten()
+
+            # Re-sample the noise matrix because the log_std has changed
+            if self.use_sde:
+                self.policy.reset_noise(self.batch_size)
+
+            values, log_prob, entropy, success_rates_pred = self.policy.evaluate_actions(
+                    rollout_data.observations, actions)
+            success_rates_pred = success_rates_pred.flatten()
+
+            loss = F.mse_loss(success_rates_pred, rollout_data.is_successes)
+
+            estimate_losses.append(loss.item())
+            indicate_success_rates = th.where(
+                success_rates_pred <= self.success_rate_threshold,
+                success_rates_pred, th.as_tensor(1, dtype=th.float32).to(self.device))
+            indicate_success_rates = th.where(
+                success_rates_pred > self.success_rate_threshold,
+                indicate_success_rates, th.as_tensor(0, dtype=th.float32).to(self.device))
+            estimate_right_rates.append(
+                    th.mean(th.as_tensor(indicate_success_rates == rollout_data.is_successes,
+                                         dtype=th.float32)).detach().cpu().numpy().item())
+
+            self.policy.optimizer.zero_grad()
+            loss.backward()
+            th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+            self.policy.optimizer.step()
+
+        self.logger.record("estimate/mse_loss", np.mean(estimate_losses))
+        self.logger.record("estimate/right_rate", np.mean(estimate_right_rates))
 
     def learn(
             self,
@@ -332,7 +351,9 @@ class PPO(OnPolicyAlgorithm):
             reset_num_timesteps: bool = True,
             save_interval: Optional[int] = None,
             save_path: Optional[str] = None,
-    ) -> "PPO":
+            save_count: int = 0,
+            train_estimate_flag: bool = False,
+    ) -> "OnPolicyAlgorithm":
 
         return super(PPO, self).learn(
             total_timesteps=total_timesteps,
@@ -346,4 +367,6 @@ class PPO(OnPolicyAlgorithm):
             reset_num_timesteps=reset_num_timesteps,
             save_interval=save_interval,
             save_path=save_path,
+            save_count=save_count,
+            train_estimate_flag=train_estimate_flag,
         )
