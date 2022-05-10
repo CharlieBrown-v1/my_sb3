@@ -1,4 +1,3 @@
-from os import scandir
 import time
 from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
@@ -182,6 +181,10 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
             new_obs, rewards, dones, infos = env.step(clipped_actions)
 
+            if self.is_hybrid_policy:
+                is_removal_success = np.array([info['is_removal_success'] for info in infos])
+                removal_dones = np.logical_or(dones, is_removal_success)
+
             self.num_timesteps += env.num_envs
 
             # Give access to local variables
@@ -200,20 +203,30 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             # DIY
             if self.is_hybrid_policy:
                 is_successes = th.as_tensor([info['is_success'] for info in infos]).to(self.device)
+
                 rollout_buffer.add(self._last_obs, actions, rewards, self._last_episode_starts, values, log_probs,
                                    is_successes)
             else:
                 rollout_buffer.add(self._last_obs, actions, rewards, self._last_episode_starts, values, log_probs)
 
             self._last_obs = new_obs
-            self._last_episode_starts = dones
+
+            # DIY
+            if self.is_hybrid_policy:
+                self._last_episode_starts = removal_dones
+            else:
+                self._last_episode_starts = dones
 
         with th.no_grad():
             # Compute value for the last timestep
             obs_tensor = obs_as_tensor(new_obs, self.device)
             _, values, _ = self.policy.forward(obs_tensor)
 
-        rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
+        # DIY
+        if self.is_hybrid_policy:
+            rollout_buffer.compute_returns_and_advantage(last_values=values, dones=removal_dones)
+        else:
+            rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
 
         callback.on_rollout_end()
 

@@ -684,7 +684,7 @@ class DictRolloutBuffer(RolloutBuffer):
             episode_start: np.ndarray,
             value: th.Tensor,
             log_prob: th.Tensor,
-            is_success: th.Tensor,  # DIY
+            is_success: th.Tensor = None,  # DIY
     ) -> None:
         """
         :param obs: Observation
@@ -695,7 +695,6 @@ class DictRolloutBuffer(RolloutBuffer):
             following the current policy.
         :param log_prob: log probability of the action
             following the current policy.
-        :param info: information
         :param is_success: used by estimate function
         """
         if len(log_prob.shape) == 0:
