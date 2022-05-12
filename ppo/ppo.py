@@ -196,12 +196,7 @@ class PPO(OnPolicyAlgorithm):
                 if self.use_sde:
                     self.policy.reset_noise(self.batch_size)
 
-                # DIY
-                if self.is_hybrid_policy:
-                    values, log_prob, entropy, success_rates_pred = self.policy.evaluate_actions(
-                        rollout_data.observations, actions)
-                else:
-                    values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, actions)
+                values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, actions)
 
                 values = values.flatten()
                 # Normalize advantage
@@ -295,23 +290,17 @@ class PPO(OnPolicyAlgorithm):
         assert self.is_hybrid_policy
 
         self.policy.set_training_mode(True)
-        self._update_learning_rate(self.policy.optimizer)
+        self._update_learning_rate(self.policy.estimate_optimizer)
 
         estimate_losses = []
         estimate_right_rates = []
 
         for rollout_data in self.rollout_buffer.get(self.batch_size):
-            actions = rollout_data.actions
-            if isinstance(self.action_space, spaces.Discrete):
-                # Convert discrete action from float to long
-                actions = rollout_data.actions.long().flatten()
-
             # Re-sample the noise matrix because the log_std has changed
             if self.use_sde:
                 self.policy.reset_noise(self.batch_size)
 
-            values, log_prob, entropy, success_rates_pred = self.policy.evaluate_actions(
-                    rollout_data.observations, actions)
+            success_rates_pred = self.policy.estimate_observations(rollout_data.observations)
 
             is_successes_indicate = rollout_data.is_successes.long()
             loss = F.cross_entropy(success_rates_pred, is_successes_indicate)
@@ -321,10 +310,10 @@ class PPO(OnPolicyAlgorithm):
             estimate_right_rates.append((pred_is_success_indicate == is_successes_indicate)
                                         .float().mean().detach().cpu().numpy().item())
 
-            self.policy.optimizer.zero_grad()
+            self.policy.estimate_optimizer.zero_grad()
             loss.backward()
-            th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
-            self.policy.optimizer.step()
+            th.nn.utils.clip_grad_norm_(self.policy.estimate_net.parameters(), self.max_grad_norm)
+            self.policy.estimate_optimizer.step()
 
         self.logger.record("estimate/CrossEntropyLoss", np.mean(estimate_losses))
         self.logger.record("estimate/RightRate", np.mean(estimate_right_rates))

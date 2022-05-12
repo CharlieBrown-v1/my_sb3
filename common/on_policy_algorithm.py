@@ -268,6 +268,11 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
         callback.on_training_start(locals(), globals())
 
+        if train_estimate_flag:
+            assert self.is_hybrid_policy
+            self.policy.build_estimate(self.lr_schedule)
+            assert self.policy.estimate_net is not None and self.policy.estimate_optimizer is not None
+
         while self.num_timesteps < total_timesteps:
 
             continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer,

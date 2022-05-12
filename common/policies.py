@@ -901,9 +901,11 @@ class HybridPolicy(ActorCriticPolicy):
             optimizer_class,
             optimizer_kwargs,
         )
+        self.estimate_net = None
+        self.estimate_optimizer = None
 
-    def _build(self, lr_schedule: Schedule) -> None:
-        super(HybridPolicy, self)._build(lr_schedule)
+    def build_estimate(self, lr_schedule: Schedule) -> None:
+        assert self.estimate_net is None and self.estimate_optimizer is None
         self.estimate_net = nn.Sequential(
             nn.Linear(self.mlp_extractor.latent_dim_vf, 64),
             nn.ReLU(),
@@ -912,25 +914,19 @@ class HybridPolicy(ActorCriticPolicy):
         )
         if self.ortho_init:
             self.estimate_net.apply(partial(self.init_weights, gain=1))
-        self.optimizer = self.optimizer_class(self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)
+        self.estimate_optimizer = self.optimizer_class(self.estimate_net.parameters(), lr=lr_schedule(1),
+                                                       **self.optimizer_kwargs)
 
-    def evaluate_actions(self, obs: th.Tensor, actions: th.Tensor) -> Tuple[th.Tensor, th.Tensor, th.Tensor, th.Tensor]:
+    def estimate_observations(self, obs: th.Tensor) -> th.Tensor:
         features = self.extract_features(obs)
         latent_pi, latent_vf = self.mlp_extractor(features)
-        distribution = self._get_action_dist_from_latent(latent_pi)
-        log_prob = distribution.log_prob(actions)
-        values = self.value_net(latent_vf)
         success_rates_pred = self.estimate_net(latent_vf)
-        return values, log_prob, distribution.entropy(), success_rates_pred
+        return success_rates_pred
 
-    def estimate_observation(self,
-                             observation: Dict[str, np.ndarray],
-                             test_mode: False,
-                             ):
+    def predict_observation(self, observation: Dict[str, np.ndarray]):
         assert isinstance(observation, dict)
 
-        if test_mode:
-            observation, _ = self.obs_to_tensor(observation)
+        observation, _ = self.obs_to_tensor(observation)
         feature = self.extract_features(observation)
         latent_pi, latent_vf = self.mlp_extractor(feature)
         estimate_output = self.estimate_net(latent_vf).flatten()
