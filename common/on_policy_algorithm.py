@@ -198,14 +198,11 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
             # DIY
             if self.is_hybrid_policy:
-                is_removal_success = np.array([info['is_removal_success'] for info in infos])
-                is_successes = th.as_tensor([info['is_success'] for info in infos]).to(self.device)
-
-                removal_dones = np.logical_or(dones, is_removal_success)
-                is_successes = th.logical_or(is_successes, th.as_tensor(is_removal_success).to(self.device))
+                train_dones = np.array([info['train_done'] for info in infos])
+                train_is_successes = th.as_tensor([info['train_is_success'] for info in infos]).to(self.device)
 
                 rollout_buffer.add(self._last_obs, actions, rewards, self._last_episode_starts, values, log_probs,
-                                   is_successes)
+                                   train_is_successes)
             else:
                 rollout_buffer.add(self._last_obs, actions, rewards, self._last_episode_starts, values, log_probs)
 
@@ -213,7 +210,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
             # DIY
             if self.is_hybrid_policy:
-                self._last_episode_starts = removal_dones
+                self._last_episode_starts = train_dones
             else:
                 self._last_episode_starts = dones
 
@@ -224,7 +221,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
         # DIY
         if self.is_hybrid_policy:
-            rollout_buffer.compute_returns_and_advantage(last_values=values, dones=removal_dones)
+            rollout_buffer.compute_returns_and_advantage(last_values=values, dones=train_dones)
         else:
             rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
 
