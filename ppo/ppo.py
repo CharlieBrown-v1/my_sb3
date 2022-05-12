@@ -151,9 +151,6 @@ class PPO(OnPolicyAlgorithm):
         if _init_setup_model:
             self._setup_model()
 
-        # DIY
-        self.success_rate_threshold = 0.5
-
     def _setup_model(self) -> None:
         super(PPO, self)._setup_model()
 
