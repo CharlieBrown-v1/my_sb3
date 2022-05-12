@@ -181,10 +181,6 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
             new_obs, rewards, dones, infos = env.step(clipped_actions)
 
-            if self.is_hybrid_policy:
-                is_removal_success = np.array([info['is_removal_success'] for info in infos])
-                removal_dones = np.logical_or(dones, is_removal_success)
-
             self.num_timesteps += env.num_envs
 
             # Give access to local variables
@@ -202,7 +198,11 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 
             # DIY
             if self.is_hybrid_policy:
+                is_removal_success = np.array([info['is_removal_success'] for info in infos])
                 is_successes = th.as_tensor([info['is_success'] for info in infos]).to(self.device)
+
+                removal_dones = np.logical_or(dones, is_removal_success)
+                is_successes = th.logical_or(is_successes, th.as_tensor(is_removal_success).to(self.device))
 
                 rollout_buffer.add(self._last_obs, actions, rewards, self._last_episode_starts, values, log_probs,
                                    is_successes)
