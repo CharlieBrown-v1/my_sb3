@@ -901,11 +901,10 @@ class HybridPolicy(ActorCriticPolicy):
             optimizer_class,
             optimizer_kwargs,
         )
-        self.estimate_net = None
-        self.estimate_optimizer = None
 
-    def build_estimate(self, lr_schedule: Schedule) -> None:
-        assert self.estimate_net is None and self.estimate_optimizer is None
+    def _build(self, lr_schedule: Schedule) -> None:
+        super(HybridPolicy, self)._build(lr_schedule)
+
         self.estimate_net = nn.Sequential(
             nn.Linear(self.mlp_extractor.latent_dim_vf, 64),
             nn.ReLU(),
