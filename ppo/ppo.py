@@ -315,28 +315,22 @@ class PPO(OnPolicyAlgorithm):
 
             values, log_prob, entropy, success_rates_pred = self.policy.evaluate_actions(
                     rollout_data.observations, actions)
-            success_rates_pred = success_rates_pred.flatten()
 
-            loss = F.mse_loss(success_rates_pred, rollout_data.is_successes)
+            is_successes_indicate = rollout_data.is_successes.long()
+            loss = F.cross_entropy(success_rates_pred, is_successes_indicate)
 
             estimate_losses.append(loss.item())
-            indicate_success_rates = th.where(
-                success_rates_pred <= self.success_rate_threshold,
-                success_rates_pred, th.as_tensor(1, dtype=th.float32).to(self.device))
-            indicate_success_rates = th.where(
-                success_rates_pred > self.success_rate_threshold,
-                indicate_success_rates, th.as_tensor(0, dtype=th.float32).to(self.device))
-            estimate_right_rates.append(
-                    th.mean(th.as_tensor(indicate_success_rates == rollout_data.is_successes,
-                                         dtype=th.float32)).detach().cpu().numpy().item())
+            _, pred_is_success_indicate = th.max(success_rates_pred, dim=1)
+            estimate_right_rates.append((pred_is_success_indicate == is_successes_indicate)
+                                        .float().mean().detach().cpu().numpy().item())
 
             self.policy.optimizer.zero_grad()
             loss.backward()
             th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
             self.policy.optimizer.step()
 
-        self.logger.record("estimate/mse_loss", np.mean(estimate_losses))
-        self.logger.record("estimate/right_rate", np.mean(estimate_right_rates))
+        self.logger.record("estimate/CrossEntropyLoss", np.mean(estimate_losses))
+        self.logger.record("estimate/RightRate", np.mean(estimate_right_rates))
 
     def learn(
             self,

@@ -904,7 +904,12 @@ class HybridPolicy(ActorCriticPolicy):
 
     def _build(self, lr_schedule: Schedule) -> None:
         super(HybridPolicy, self)._build(lr_schedule)
-        self.estimate_net = nn.Sequential(nn.Linear(self.mlp_extractor.latent_dim_vf, 1), nn.Sigmoid())
+        self.estimate_net = nn.Sequential(
+            nn.Linear(self.mlp_extractor.latent_dim_vf, 64),
+            nn.ReLU(),
+            nn.Linear(64, 2),
+            nn.Softmax(dim=1),
+        )
         if self.ortho_init:
             self.estimate_net.apply(partial(self.init_weights, gain=1))
         self.optimizer = self.optimizer_class(self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)
@@ -918,17 +923,21 @@ class HybridPolicy(ActorCriticPolicy):
         success_rates_pred = self.estimate_net(latent_vf)
         return values, log_prob, distribution.entropy(), success_rates_pred
 
-    def estimate_observations(self,
-                              observations: th.Tensor,
-                              test_mode: False,
-                              ):
-        if test_mode:
-            observations, _ = self.obs_to_tensor(observations)
-        features = self.extract_features(observations)
-        latent_pi, latent_vf = self.mlp_extractor(features)
-        success_rates_pred = self.estimate_net(latent_vf)
+    def estimate_observation(self,
+                             observation: Dict[str, np.ndarray],
+                             test_mode: False,
+                             ):
+        assert isinstance(observation, dict)
 
-        return success_rates_pred
+        if test_mode:
+            observation, _ = self.obs_to_tensor(observation)
+        feature = self.extract_features(observation)
+        latent_pi, latent_vf = self.mlp_extractor(feature)
+        estimate_output = self.estimate_net(latent_vf).flatten()
+
+        success_probability = estimate_output[1].detach().cpu().item()
+
+        return success_probability
 
 
 class ContinuousCritic(BaseModel):

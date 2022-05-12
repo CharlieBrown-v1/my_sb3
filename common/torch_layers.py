@@ -95,11 +95,11 @@ class NatureCNN(BaseFeaturesExtractor):
 
 
 def create_mlp(
-    input_dim: int,
-    output_dim: int,
-    net_arch: List[int],
-    activation_fn: Type[nn.Module] = nn.ReLU,
-    squash_output: bool = False,
+        input_dim: int,
+        output_dim: int,
+        net_arch: List[int],
+        activation_fn: Type[nn.Module] = nn.ReLU,
+        squash_output: bool = False,
 ) -> List[nn.Module]:
     """
     Create a multi layer perceptron (MLP), which is
@@ -162,11 +162,11 @@ class MlpExtractor(nn.Module):
     """
 
     def __init__(
-        self,
-        feature_dim: int,
-        net_arch: List[Union[int, Dict[str, List[int]]]],
-        activation_fn: Type[nn.Module],
-        device: Union[th.device, str] = "auto",
+            self,
+            feature_dim: int,
+            net_arch: List[Union[int, Dict[str, List[int]]]],
+            activation_fn: Type[nn.Module],
+            device: Union[th.device, str] = "auto",
     ):
         super(MlpExtractor, self).__init__()
         device = get_device(device)
@@ -267,13 +267,13 @@ class CombinedExtractor(BaseFeaturesExtractor):
         # Update the features dim manually
         self._features_dim = total_concat_size
 
-
     def forward(self, observations: TensorDict) -> th.Tensor:
         encoded_tensor_list = []
 
         for key, extractor in self.extractors.items():
             encoded_tensor_list.append(extractor(observations[key]))
         return th.cat(encoded_tensor_list, dim=1)
+
 
 # DIY
 class HybridExtractor(BaseFeaturesExtractor):
@@ -313,6 +313,7 @@ class HybridExtractor(BaseFeaturesExtractor):
             encoded_tensor_list.append(extractor(observations[key]))
         return th.cat(encoded_tensor_list, dim=1)
 
+
 # DIY
 class HybridNatureCNN(BaseFeaturesExtractor):
     """
@@ -328,7 +329,7 @@ class HybridNatureCNN(BaseFeaturesExtractor):
         # Re-ordering will be done by pre-preprocessing or wrapper
 
         self.cube_shape = cube_shape.copy()
-        self.cube_len = th.prod(th.as_tensor(cube_shape), dtype=int)
+        self.cube_len = th.prod(th.as_tensor(cube_shape), dtype=th.int)
         self.physical_len = th.as_tensor(observation_space.shape) - self.cube_len
         self.n_input_channels = 1
 
@@ -350,11 +351,10 @@ class HybridNatureCNN(BaseFeaturesExtractor):
         self.linear = nn.Sequential(nn.Linear(n_flatten, features_dim), nn.ReLU())
 
     def forward(self, observations: th.Tensor) -> th.Tensor:
-        cube_len = th.prod(th.as_tensor(self.cube_shape), dtype=int)
         cube_latent = th.reshape(observations[:, :self.cube_len], shape=[-1, self.n_input_channels] + self.cube_shape)
         cube_hidden = self.linear(self.cnn(cube_latent))
-        physical_hidden = observations[:, self.cube_len: ]
-        hidden = th.cat([cube_hidden, physical_hidden], axis=-1)
+        physical_hidden = observations[:, self.cube_len:]
+        hidden = th.cat([cube_hidden, physical_hidden], -1)
         return hidden
 
 
