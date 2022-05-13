@@ -148,6 +148,9 @@ class PPO(OnPolicyAlgorithm):
         self.clip_range_vf = clip_range_vf
         self.target_kl = target_kl
 
+        # DIY
+        self.success_rate_threshold = 0.5
+
         if _init_setup_model:
             self._setup_model()
 
@@ -300,13 +303,20 @@ class PPO(OnPolicyAlgorithm):
             if self.use_sde:
                 self.policy.reset_noise(self.batch_size)
 
-            success_rates_pred = self.policy.estimate_observations(rollout_data.observations)
+            success_rates_pred = self.policy.estimate_observations(rollout_data.observations).flatten()
 
-            is_successes_indicate = rollout_data.is_successes.long()
-            loss = F.cross_entropy(success_rates_pred, is_successes_indicate)
+            loss = F.binary_cross_entropy(success_rates_pred, rollout_data.is_successes)
 
             estimate_losses.append(loss.item())
-            _, pred_is_success_indicate = th.max(success_rates_pred, dim=1)
+
+            is_successes_indicate = rollout_data.is_successes.long()
+            pred_is_success_indicate = th.where(success_rates_pred <= self.success_rate_threshold,
+                                                success_rates_pred,
+                                                th.as_tensor(1, dtype=th.float))
+            pred_is_success_indicate = th.where(success_rates_pred > self.success_rate_threshold,
+                                                pred_is_success_indicate,
+                                                th.as_tensor(0, dtype=th.float))
+
             estimate_right_rates.append((pred_is_success_indicate == is_successes_indicate)
                                         .float().mean().detach().cpu().numpy().item())
 

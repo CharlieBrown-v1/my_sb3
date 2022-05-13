@@ -906,10 +906,8 @@ class HybridPolicy(ActorCriticPolicy):
         super(HybridPolicy, self)._build(lr_schedule)
 
         self.estimate_net = nn.Sequential(
-            nn.Linear(self.mlp_extractor.latent_dim_vf, 64),
-            nn.ReLU(),
-            nn.Linear(64, 2),
-            nn.Softmax(dim=1),
+            nn.Linear(self.mlp_extractor.latent_dim_vf, 1),
+            nn.Sigmoid()
         )
         if self.ortho_init:
             self.estimate_net.apply(partial(self.init_weights, gain=1))
