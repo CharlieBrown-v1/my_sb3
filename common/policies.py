@@ -925,9 +925,7 @@ class HybridPolicy(ActorCriticPolicy):
         observation, _ = self.obs_to_tensor(observation)
         feature = self.extract_features(observation)
         latent_pi, latent_vf = self.mlp_extractor(feature)
-        estimate_output = self.estimate_net(latent_vf).flatten()
-
-        success_probability = estimate_output[1].detach().cpu().item()
+        success_probability = self.estimate_net(latent_vf).flatten().item()
 
         return success_probability
 
