@@ -310,12 +310,13 @@ class PPO(OnPolicyAlgorithm):
             estimate_losses.append(loss.item())
 
             is_successes_indicate = rollout_data.is_successes.long()
-            pred_is_success_indicate = th.where(success_rates_pred <= self.success_rate_threshold,
+            cuda_success_rate_threshold = th.as_tensor(self.success_rate_threshold).to(self.device)
+            pred_is_success_indicate = th.where(success_rates_pred <= cuda_success_rate_threshold,
                                                 success_rates_pred,
-                                                th.as_tensor(1, dtype=th.float))
-            pred_is_success_indicate = th.where(success_rates_pred > self.success_rate_threshold,
+                                                th.as_tensor(1, dtype=th.float).to(self.device)).to(self.device)
+            pred_is_success_indicate = th.where(success_rates_pred > cuda_success_rate_threshold,
                                                 pred_is_success_indicate,
-                                                th.as_tensor(0, dtype=th.float))
+                                                th.as_tensor(0, dtype=th.float).to(self.device)).to(self.device)
 
             estimate_right_rates.append((pred_is_success_indicate == is_successes_indicate)
                                         .float().mean().detach().cpu().numpy().item())
