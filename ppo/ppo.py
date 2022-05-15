@@ -298,36 +298,37 @@ class PPO(OnPolicyAlgorithm):
         estimate_losses = []
         estimate_right_rates = []
 
-        for rollout_data in self.rollout_buffer.get(self.batch_size):
-            # Re-sample the noise matrix because the log_std has changed
-            if self.use_sde:
-                self.policy.reset_noise(self.batch_size)
+        for _ in range(self.n_epochs):
+            for rollout_data in self.rollout_buffer.get(self.batch_size):
+                # Re-sample the noise matrix because the log_std has changed
+                if self.use_sde:
+                    self.policy.reset_noise(self.batch_size)
 
-            success_rates_pred = self.policy.estimate_observations(rollout_data.observations).flatten()
+                success_rates_pred = self.policy.estimate_observations(rollout_data.observations).flatten()
 
-            loss = F.binary_cross_entropy(success_rates_pred, rollout_data.is_successes)
+                loss = F.binary_cross_entropy(success_rates_pred, rollout_data.is_successes)
 
-            estimate_losses.append(loss.item())
+                estimate_losses.append(loss.item())
 
-            is_successes_indicate = rollout_data.is_successes.long()
-            cuda_success_rate_threshold = th.as_tensor(self.success_rate_threshold).to(self.device)
-            pred_is_success_indicate = th.where(success_rates_pred <= cuda_success_rate_threshold,
-                                                success_rates_pred,
-                                                th.as_tensor(1, dtype=th.float).to(self.device)).to(self.device)
-            pred_is_success_indicate = th.where(success_rates_pred > cuda_success_rate_threshold,
-                                                pred_is_success_indicate,
-                                                th.as_tensor(0, dtype=th.float).to(self.device)).to(self.device)
+                is_successes_indicate = rollout_data.is_successes.long()
+                cuda_success_rate_threshold = th.as_tensor(self.success_rate_threshold).to(self.device)
+                pred_is_success_indicate = th.where(success_rates_pred <= cuda_success_rate_threshold,
+                                                    success_rates_pred,
+                                                    th.as_tensor(1, dtype=th.float).to(self.device)).to(self.device)
+                pred_is_success_indicate = th.where(success_rates_pred > cuda_success_rate_threshold,
+                                                    pred_is_success_indicate,
+                                                    th.as_tensor(0, dtype=th.float).to(self.device)).to(self.device)
 
-            estimate_right_rates.append((pred_is_success_indicate == is_successes_indicate)
-                                        .float().mean().detach().cpu().numpy().item())
+                estimate_right_rates.append((pred_is_success_indicate == is_successes_indicate)
+                                            .mean().detach().cpu().numpy().item())
 
-            self.policy.optimizer.zero_grad()
-            loss.backward()
-            th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
-            self.policy.optimizer.step()
+                self.policy.optimizer.zero_grad()
+                loss.backward()
+                th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+                self.policy.optimizer.step()
 
-        self.logger.record("estimate/CrossEntropyLoss", np.mean(estimate_losses))
-        self.logger.record("estimate/RightRate", np.mean(estimate_right_rates))
+        self.logger.record("estimate/binary_cross_entropy_loss", np.mean(estimate_losses))
+        self.logger.record("estimate/right_rate", np.mean(estimate_right_rates))
 
     def learn(
             self,
