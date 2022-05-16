@@ -320,7 +320,7 @@ class PPO(OnPolicyAlgorithm):
                                                     th.as_tensor(0, dtype=th.float).to(self.device)).to(self.device)
 
                 estimate_right_rates.append((pred_is_success_indicate == is_successes_indicate)
-                                            .mean().detach().cpu().numpy().item())
+                                            .float().mean().detach().cpu().numpy().item())
 
                 self.policy.optimizer.zero_grad()
                 loss.backward()
