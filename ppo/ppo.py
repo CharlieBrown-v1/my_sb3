@@ -327,7 +327,7 @@ class PPO(OnPolicyAlgorithm):
                 th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                 self.policy.optimizer.step()
 
-        self.logger.record("estimate/binary_cross_entropy_loss", np.mean(estimate_losses))
+        self.logger.record("estimate/bce_loss", np.mean(estimate_losses))
         self.logger.record("estimate/right_rate", np.mean(estimate_right_rates))
 
     def learn(
