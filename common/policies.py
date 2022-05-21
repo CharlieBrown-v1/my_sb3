@@ -913,18 +913,10 @@ class HybridPolicy(ActorCriticPolicy):
             self.estimate_net.apply(partial(self.init_weights, gain=1))
         self.optimizer = self.optimizer_class(self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)
 
-        self.train_estimate_net = nn.Sequential(
-            nn.Linear(self.mlp_extractor.latent_dim_vf, 1),
-            nn.Sigmoid()
-        )
-        if self.ortho_init:
-            self.train_estimate_net.apply(partial(self.init_weights, gain=1))
-        self.train_estimate_optimizer = self.optimizer_class(self.train_estimate_net.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)
-
     def estimate_observations(self, obs: th.Tensor) -> th.Tensor:
         features = self.extract_features(obs)
         latent_pi, latent_vf = self.mlp_extractor(features)
-        success_rates_pred = self.train_estimate_net(latent_vf)
+        success_rates_pred = self.estimate_net(latent_vf)
         return success_rates_pred
 
     def predict_observation(self, observation: Dict[str, np.ndarray]):
@@ -933,7 +925,7 @@ class HybridPolicy(ActorCriticPolicy):
         observation, _ = self.obs_to_tensor(observation)
         feature = self.extract_features(observation)
         latent_pi, latent_vf = self.mlp_extractor(feature)
-        success_probability = self.train_estimate_net(latent_vf).flatten().item()
+        success_probability = self.estimate_net(latent_vf).flatten().item()
 
         return success_probability
 
