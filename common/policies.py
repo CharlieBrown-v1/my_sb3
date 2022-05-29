@@ -913,6 +913,15 @@ class HybridPolicy(ActorCriticPolicy):
             self.estimate_net.apply(partial(self.init_weights, gain=1))
         self.optimizer = self.optimizer_class(self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)
 
+        self.train_estimate_net = nn.Sequential(
+            nn.Linear(self.mlp_extractor.latent_dim_vf, 1),
+            nn.Sigmoid()
+        )
+        if self.ortho_init:
+            self.train_estimate_net.apply(partial(self.init_weights, gain=1))
+        self.train_estimate_optimizer = self.optimizer_class(self.train_estimate_net.parameters(), lr=lr_schedule(1),
+                                                             **self.optimizer_kwargs)
+
     def estimate_observations(self, obs: th.Tensor) -> th.Tensor:
         features = self.extract_features(obs)
         latent_pi, latent_vf = self.mlp_extractor(features)
