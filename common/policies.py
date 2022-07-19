@@ -911,8 +911,8 @@ class HybridPolicy(ActorCriticPolicy):
         )
         if self.ortho_init:
             self.estimate_net.apply(partial(self.init_weights, gain=1))
-        self.estimate_optimizer = self.optimizer_class(self.estimate_net.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)
-        # self.optimizer = self.optimizer_class(self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)
+        # self.estimate_optimizer = self.optimizer_class(self.estimate_net.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)
+        self.optimizer = self.optimizer_class(self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)
 
     def estimate_observations(self, obs: th.Tensor) -> th.Tensor:
         features = self.extract_features(obs)
