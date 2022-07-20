@@ -917,7 +917,8 @@ class HybridPolicy(ActorCriticPolicy):
     def estimate_observations(self, obs: th.Tensor) -> th.Tensor:
         features = self.extract_features(obs)
         latent_pi, latent_vf = self.mlp_extractor(features)
-        success_rates_pred = self.estimate_net(latent_vf)
+        estimate_latent_vf = latent_vf.detach()
+        success_rates_pred = self.estimate_net(estimate_latent_vf)
         return success_rates_pred
 
     def predict_observation(self, observation: Dict[str, np.ndarray]):
