@@ -340,7 +340,7 @@ class HybridNatureCNN(BaseFeaturesExtractor):
             nn.Conv3d(1, 1, kernel_size=(3, 3, 3), stride=(1, 1, 1)),
             nn.ReLU(),
             nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2)),
-            nn.Conv3d(1, 1, kernel_size=(3, 3, 3), stride=(1, 1, 1)),
+            nn.Conv3d(1, 1, kernel_size=(3, 3, 2), stride=(1, 1, 1)),
             nn.ReLU(),
             nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2), padding=(0, 1, 1)),
             nn.Flatten(),
