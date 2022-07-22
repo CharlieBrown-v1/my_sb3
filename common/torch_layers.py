@@ -334,12 +334,15 @@ class HybridNatureCNN(BaseFeaturesExtractor):
         self.n_input_channels = 1
 
         self.cnn = nn.Sequential(
-            nn.Conv3d(self.n_input_channels, 32, kernel_size=4, stride=2, padding=0),
+            nn.Conv3d(self.n_input_channels, 1, kernel_size=(3, 3, 3), stride=(1, 1, 1)),
             nn.ReLU(),
-            nn.Conv3d(32, 64, kernel_size=4, stride=2, padding=0),
+            nn.MaxPool3d(kernel_size=(1, 2, 2), stride=(1, 2, 2)),
+            nn.Conv3d(1, 1, kernel_size=(3, 3, 3), stride=(1, 1, 1)),
             nn.ReLU(),
-            nn.Conv3d(64, 64, kernel_size=1, stride=1, padding=0),
+            nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2)),
+            nn.Conv3d(1, 1, kernel_size=(3, 3, 2), stride=(1, 1, 1)),
             nn.ReLU(),
+            nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2), padding=(0, 1, 1)),
             nn.Flatten(),
         )
 
