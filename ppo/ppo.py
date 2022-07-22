@@ -293,7 +293,7 @@ class PPO(OnPolicyAlgorithm):
         assert self.is_hybrid_policy
 
         self.policy.set_training_mode(True)
-        self._update_learning_rate(self.policy.optimizer)
+        self._update_learning_rate(self.policy.estimate_optimizer)
 
         estimate_losses = []
         estimate_right_rates = []
@@ -322,10 +322,10 @@ class PPO(OnPolicyAlgorithm):
                 estimate_right_rates.append((pred_is_success_indicate == is_successes_indicate)
                                             .float().mean().detach().cpu().numpy().item())
 
-                self.policy.optimizer.zero_grad()
+                self.policy.estimate_optimizer.zero_grad()
                 loss.backward()
                 th.nn.utils.clip_grad_norm_(self.policy.estimate_net.parameters(), self.max_grad_norm)
-                self.policy.optimizer.step()
+                self.policy.estimate_optimizer.step()
 
         self.logger.record("estimate/bce_loss", np.mean(estimate_losses))
         self.logger.record("estimate/right_rate", np.mean(estimate_right_rates))
