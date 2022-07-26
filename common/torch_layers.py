@@ -274,7 +274,6 @@ class CombinedExtractor(BaseFeaturesExtractor):
             encoded_tensor_list.append(extractor(observations[key]))
         return th.cat(encoded_tensor_list, dim=1)
 
-
 # DIY
 class HybridExtractor(BaseFeaturesExtractor):
     """
@@ -312,7 +311,6 @@ class HybridExtractor(BaseFeaturesExtractor):
         for key, extractor in self.extractors.items():
             encoded_tensor_list.append(extractor(observations[key]))
         return th.cat(encoded_tensor_list, dim=1)
-
 
 # DIY
 class HybridNatureCNN(BaseFeaturesExtractor):
@@ -357,6 +355,53 @@ class HybridNatureCNN(BaseFeaturesExtractor):
         hidden = th.cat([cube_hidden, physical_hidden], -1)
         return hidden
 
+# DIY
+class AttnExtractor(BaseFeaturesExtractor):
+    """
+    Hybrid feature extractor for Dict observation spaces.
+    Add CNN feature extract based on Combined feature extractor.
+    The output features are concatenated and fed through additional MLP network.
+
+    :param observation_space:
+    :param cnn_output_dim: Number of features to output from CNN module, Defaults to 64.
+    """
+
+    def __init__(self, observation_space: gym.spaces.Dict, obstacle_feature_size: int = None, attn_output_dim: int = 64):
+        # TODO we do not know features-dim here before going over all the items, so put something there. This is dirty!
+        assert obstacle_feature_size is not None
+        super(AttnExtractor, self).__init__(observation_space, features_dim=1)
+
+        extractors = {
+            'self_feature': SelfAttn(embedding=attn_output_dim),
+            'obstacle_feature': SelfAttn(embedding=attn_output_dim),
+        }
+        total_feature_size = attn_output_dim * len(extractors)
+
+        self.obstacle_feature_size = obstacle_feature_size
+        self.extractors = nn.ModuleDict(extractors)
+        # Update the features dim manually
+        self._features_dim = total_feature_size
+
+    def forward(self, observations: TensorDict) -> th.Tensor:
+        encoded_tensor_dict = {
+            'self_feature': [],
+            'obstacle_feature': [],
+        }
+
+        for key, extractor in observations.items():
+            if key == 'observation':
+                encoded_tensor_dict['self_feature'].append(observations[key][:, :-self.obstacle_feature_size])
+                encoded_tensor_dict['obstacle_feature'].append(observations[key][:, -self.obstacle_feature_size:])
+            else:
+                encoded_tensor_dict['self_feature'].append(observations[key])
+
+        encoded_tensor_list = []
+        assert encoded_tensor_dict.keys() == self.extractors.keys()
+        for key, obs in encoded_tensor_dict.items():
+            encoded_tensor_list.append(self.extractors[key](obs))
+
+        return th.cat(encoded_tensor_list, dim=1)
+
 
 def get_actor_critic_arch(net_arch: Union[List[int], Dict[str, List[int]]]) -> Tuple[List[int], List[int]]:
     """
@@ -396,3 +441,71 @@ def get_actor_critic_arch(net_arch: Union[List[int], Dict[str, List[int]]]) -> T
         assert "qf" in net_arch, "Error: no key 'qf' was provided in net_arch for the critic network"
         actor_arch, critic_arch = net_arch["pi"], net_arch["qf"]
     return actor_arch, critic_arch
+
+
+# DIY
+import torch.nn as nn
+import torch.nn.functional as F
+import torch
+
+
+class SelfAttn(nn.Module):
+    def __init__(self, embedding, heads=8, mask=False):
+        super(SelfAttn, self).__init__()
+
+        self.embedding = embedding
+        self.heads = heads
+        self.mask = mask
+
+        self.tokeys = nn.Linear(embedding, embedding * heads, bias=False)
+        self.toqueries = nn.Linear(embedding, embedding * heads, bias=False)
+        self.tovalues = nn.Linear(embedding, embedding * heads, bias=False)
+
+        self.unifyheads = nn.Linear(heads * embedding, embedding)
+
+    def forward(self, x, mask=None):
+        b, t, e = x.size()
+        h = self.heads
+        keys = self.tokeys(x).reshape(b, t, h, e).contiguous()
+        queries = self.toqueries(x).reshape(b, t, h, e).contiguous()
+        values = self.tovalues(x).reshape(b, t, h, e).contiguous()
+
+        # compute scaled dot-product self-attention
+
+        # - fold heads into the batch dimension
+        keys = keys.transpose(1, 2).contiguous().view(b * h, t, e)
+        queries = queries.transpose(1, 2).contiguous().view(b * h, t, e)
+        values = values.transpose(1, 2).contiguous().view(b * h, t, e)
+
+        queries = queries / (e ** (1 / 4))
+        keys = keys / (e ** (1 / 4))
+        # - Instead of dividing the dot products by sqrt(e), we scale the keys and values.
+        #   This should be more memory efficient
+
+        # - get dot product of queries and keys, and scale
+        dot = torch.bmm(queries, keys.transpose(1, 2))
+
+        assert dot.size() == (b * h, t, t)
+
+        if self.mask:  # mask out the upper half of the dot matrix, excluding the diagonal
+            mask_(dot, maskval=float('-inf'), mask_diagonal=False)
+
+        if mask is not None:
+            dot = dot.masked_fill(mask == 0, -1e9)
+
+        dot = F.softmax(dot, dim=2)
+        # - dot now has row-wise self-attention probabilities
+
+        # apply the self attention to the values
+        out = torch.bmm(dot, values).view(b, h, t, e)
+
+        # swap h, t back, unify heads
+        out = out.transpose(1, 2).contiguous().view(b, t, h * e)
+
+        return self.unifyheads(out)
+
+
+def mask_(matrices, maskval=0.0, mask_diagonal=True):
+    b, h, w = matrices.size()
+    indices = torch.triu_indices(h, w, offset=0 if mask_diagonal else 1)
+    matrices[:, indices[0], indices[1]] = maskval

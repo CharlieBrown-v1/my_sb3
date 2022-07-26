@@ -5,6 +5,7 @@ from stable_baselines3.common.policies import (
     ActorCriticPolicy,
     MultiInputActorCriticPolicy,
     HybridPolicy,
+    AttnPolicy,
     register_policy,
 )
 
