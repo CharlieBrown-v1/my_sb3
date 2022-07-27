@@ -19,3 +19,5 @@ register_policy("MultiInputPolicy", MultiInputPolicy)
 
 # DIY
 register_policy("HybridPolicy", HybridPolicy)
+register_policy("AttnPolicy", AttnPolicy)
+

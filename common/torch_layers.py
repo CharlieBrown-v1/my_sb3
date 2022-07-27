@@ -366,15 +366,24 @@ class AttnExtractor(BaseFeaturesExtractor):
     :param cnn_output_dim: Number of features to output from CNN module, Defaults to 64.
     """
 
-    def __init__(self, observation_space: gym.spaces.Dict, obstacle_feature_size: int = None, attn_output_dim: int = 64):
+    def __init__(self, observation_space: gym.spaces.Dict,
+                 obstacle_feature_size: int = None,
+                 embedding_dim: int = 64,
+                 attn_output_dim: int = 64,
+                 ):
         # TODO we do not know features-dim here before going over all the items, so put something there. This is dirty!
         assert obstacle_feature_size is not None
         super(AttnExtractor, self).__init__(observation_space, features_dim=1)
 
+        total_observation_size = 0
+        for _, subspace in observation_space.spaces.items():
+            total_observation_size += get_flattened_obs_dim(subspace)
+
         extractors = {
-            'self_feature': SelfAttn(embedding=attn_output_dim),
-            'obstacle_feature': SelfAttn(embedding=attn_output_dim),
+            'self_feature': TransformerExtractor(emb=embedding_dim, output_dim=attn_output_dim),
+            'obstacle_feature': TransformerExtractor(emb=embedding_dim, output_dim=attn_output_dim),
         }
+
         total_feature_size = attn_output_dim * len(extractors)
 
         self.obstacle_feature_size = obstacle_feature_size
@@ -398,7 +407,7 @@ class AttnExtractor(BaseFeaturesExtractor):
         encoded_tensor_list = []
         assert encoded_tensor_dict.keys() == self.extractors.keys()
         for key, obs in encoded_tensor_dict.items():
-            encoded_tensor_list.append(self.extractors[key](obs))
+            encoded_tensor_list.append(self.extractors[key](th.cat(obs, dim=1)))
 
         return th.cat(encoded_tensor_list, dim=1)
 
@@ -443,27 +452,24 @@ def get_actor_critic_arch(net_arch: Union[List[int], Dict[str, List[int]]]) -> T
     return actor_arch, critic_arch
 
 
-# DIY
 import torch.nn as nn
 import torch.nn.functional as F
 import torch
 
 
-class SelfAttn(nn.Module):
-    def __init__(self, embedding, heads=8, mask=False):
-        super(SelfAttn, self).__init__()
-
-        self.embedding = embedding
+class SelfAttention(nn.Module):
+    def __init__(self, emb, heads=8):
+        super(SelfAttention, self).__init__()
+        self.emb = emb
         self.heads = heads
-        self.mask = mask
 
-        self.tokeys = nn.Linear(embedding, embedding * heads, bias=False)
-        self.toqueries = nn.Linear(embedding, embedding * heads, bias=False)
-        self.tovalues = nn.Linear(embedding, embedding * heads, bias=False)
+        self.tokeys = nn.Linear(emb, emb * heads, bias=False)
+        self.toqueries = nn.Linear(emb, emb * heads, bias=False)
+        self.tovalues = nn.Linear(emb, emb * heads, bias=False)
 
-        self.unifyheads = nn.Linear(heads * embedding, embedding)
+        self.unifyheads = nn.Linear(heads * emb, emb)
 
-    def forward(self, x, mask=None):
+    def forward(self, x):
         b, t, e = x.size()
         h = self.heads
         keys = self.tokeys(x).reshape(b, t, h, e).contiguous()
@@ -487,12 +493,6 @@ class SelfAttn(nn.Module):
 
         assert dot.size() == (b * h, t, t)
 
-        if self.mask:  # mask out the upper half of the dot matrix, excluding the diagonal
-            mask_(dot, maskval=float('-inf'), mask_diagonal=False)
-
-        if mask is not None:
-            dot = dot.masked_fill(mask == 0, -1e9)
-
         dot = F.softmax(dot, dim=2)
         # - dot now has row-wise self-attention probabilities
 
@@ -502,10 +502,67 @@ class SelfAttn(nn.Module):
         # swap h, t back, unify heads
         out = out.transpose(1, 2).contiguous().view(b, t, h * e)
 
-        return self.unifyheads(out)
+        y = self.unifyheads(out)
 
+        return y
 
-def mask_(matrices, maskval=0.0, mask_diagonal=True):
-    b, h, w = matrices.size()
-    indices = torch.triu_indices(h, w, offset=0 if mask_diagonal else 1)
-    matrices[:, indices[0], indices[1]] = maskval
+class TransformerBlock(nn.Module):
+    def __init__(self, emb, heads, ff_hidden_mult=4, dropout=0.0):
+        super(TransformerBlock, self).__init__()
+
+        self.attention = SelfAttention(emb, heads=heads)
+
+        self.norm1 = nn.LayerNorm(emb)
+        self.norm2 = nn.LayerNorm(emb)
+
+        self.ff = nn.Sequential(
+            nn.Linear(emb, ff_hidden_mult * emb),
+            nn.ReLU(),
+            nn.Linear(ff_hidden_mult * emb, emb)
+        )
+
+        self.do = nn.Dropout(dropout)
+
+    def forward(self, x):
+        attended = self.attention(x)
+
+        x = self.norm1(attended + x)
+
+        x = self.do(x)
+
+        feedforward = self.ff(x)
+
+        x = self.norm2(feedforward + x)
+
+        y = self.do(x)
+
+        return y
+
+class TransformerExtractor(nn.Module):
+    def __init__(self, emb=64, output_dim=64, heads=1, depth=1):
+        super(TransformerExtractor, self).__init__()
+
+        self.num_tokens = output_dim
+
+        self.token_embedding = nn.Linear(1, emb)
+        self.output = nn.Linear(emb, output_dim)
+
+        tblocks = []
+        for _ in range(depth):
+            tblocks.append(
+                TransformerBlock(emb=emb, heads=heads))
+        self.tblocks = nn.Sequential(*tblocks)
+
+    def forward(self, observations):
+        tokens = observations
+        tokens = tokens[:, :, None]
+        emb = self.token_embedding(tokens)
+
+        b, t, e = emb.size()
+
+        x = self.tblocks(emb)
+
+        x = self.output(x.view(b * t, e)).view(b, t, self.num_tokens)
+        y = x.mean(dim=1)
+
+        return y
