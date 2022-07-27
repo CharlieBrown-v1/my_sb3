@@ -411,6 +411,29 @@ class AttnExtractor(BaseFeaturesExtractor):
 
         return th.cat(encoded_tensor_list, dim=1)
 
+# DIY
+class NaiveExtractor(BaseFeaturesExtractor):
+    def __init__(self, observation_space: gym.spaces.Dict):
+        super(NaiveExtractor, self).__init__(observation_space, features_dim=1)
+
+        extractors = {}
+
+        total_concat_size = 0
+        for key, subspace in observation_space.spaces.items():
+            extractors[key] = nn.Flatten()
+            total_concat_size += get_flattened_obs_dim(subspace)
+
+        self.extractors = nn.ModuleDict(extractors)
+        # Update the features dim manually
+        self._features_dim = total_concat_size
+
+    def forward(self, observations: TensorDict) -> th.Tensor:
+        encoded_tensor_list = []
+
+        for key, extractor in self.extractors.items():
+            encoded_tensor_list.append(extractor(observations[key]))
+        return th.cat(encoded_tensor_list, dim=1)
+
 
 def get_actor_critic_arch(net_arch: Union[List[int], Dict[str, List[int]]]) -> Tuple[List[int], List[int]]:
     """

@@ -7,7 +7,7 @@ from gym import spaces
 from torch.nn import functional as F
 
 from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
-from stable_baselines3.common.policies import ActorCriticPolicy, HybridPolicy, AttnPolicy
+from stable_baselines3.common.policies import ActorCriticPolicy, HybridPolicy, AttnPolicy, NaivePolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import explained_variance, get_schedule_fn
 
@@ -66,7 +66,7 @@ class PPO(OnPolicyAlgorithm):
 
     def __init__(
             self,
-            policy: Union[str, Union[Type[ActorCriticPolicy], Type[HybridPolicy], Type[AttnPolicy]]],
+            policy: Union[str, Union[Type[ActorCriticPolicy], Type[HybridPolicy], Type[AttnPolicy], Type[NaivePolicy]]],
             env: Union[GymEnv, str],
             learning_rate: Union[float, Schedule] = 3e-4,
             n_steps: int = 2048,

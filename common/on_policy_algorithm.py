@@ -8,7 +8,7 @@ import torch as th
 from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.buffers import DictRolloutBuffer, RolloutBuffer
 from stable_baselines3.common.callbacks import BaseCallback
-from stable_baselines3.common.policies import ActorCriticPolicy, BasePolicy, HybridPolicy, AttnPolicy
+from stable_baselines3.common.policies import ActorCriticPolicy, BasePolicy, HybridPolicy, AttnPolicy, NaivePolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import obs_as_tensor, safe_mean
 from stable_baselines3.common.vec_env import VecEnv
@@ -128,7 +128,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         self.policy = self.policy.to(self.device)
 
         # DIY
-        self.is_hybrid_policy = isinstance(self.policy, HybridPolicy) or isinstance(self.policy, AttnPolicy)
+        self.is_hybrid_policy = isinstance(self.policy, HybridPolicy) or isinstance(self.policy, AttnPolicy) or isinstance(self.policy, NaivePolicy)
 
     def collect_rollouts(
             self,
