@@ -370,49 +370,43 @@ class AttnExtractor(BaseFeaturesExtractor):
     """
 
     def __init__(self, observation_space: gym.spaces.Dict,
-                 obstacle_feature_size: int = None,
+                 object_feature_size: int = None,
                  embedding_dim: int = 64,
-                 attn_output_dim: int = 64,
+                 attn_output_dim: int = 128,
                  ):
         # TODO we do not know features-dim here before going over all the items, so put something there. This is dirty!
-        assert obstacle_feature_size is not None
+        assert object_feature_size is not None
         super(AttnExtractor, self).__init__(observation_space, features_dim=1)
 
         total_observation_size = 0
         for _, subspace in observation_space.spaces.items():
             total_observation_size += get_flattened_obs_dim(subspace)
 
-        extractors = {
-            'self_feature': TransformerExtractor(emb=embedding_dim, output_dim=attn_output_dim),
-            'obstacle_feature': TransformerExtractor(emb=embedding_dim, output_dim=attn_output_dim),
-        }
+        extractor = TransformerExtractor(
+            self_dim=total_observation_size - object_feature_size,
+            object_dim=object_feature_size,
+            emb=embedding_dim,
+            output_dim=attn_output_dim
+        )
 
-        total_feature_size = attn_output_dim * len(extractors)
+        total_feature_size = attn_output_dim
 
-        self.obstacle_feature_size = obstacle_feature_size
-        self.extractors = nn.ModuleDict(extractors)
+        self.object_feature_size = object_feature_size
+        self.extractor = extractor
         # Update the features dim manually
         self._features_dim = total_feature_size
 
     def forward(self, observations: TensorDict) -> th.Tensor:
-        encoded_tensor_dict = {
-            'self_feature': [],
-            'obstacle_feature': [],
-        }
-
-        for key, extractor in observations.items():
+        obs_i_list = []
+        obs_o_list = []
+        for key, obs in observations.items():
             if key == 'observation':
-                encoded_tensor_dict['self_feature'].append(observations[key][:, :-self.obstacle_feature_size])
-                encoded_tensor_dict['obstacle_feature'].append(observations[key][:, -self.obstacle_feature_size:])
+                obs_i_list.append(obs[:, :-self.object_feature_size])
+                obs_o_list.append(obs[:, -self.object_feature_size:])
             else:
-                encoded_tensor_dict['self_feature'].append(observations[key])
+                obs_i_list.append(obs)
 
-        encoded_tensor_list = []
-        assert encoded_tensor_dict.keys() == self.extractors.keys()
-        for key, obs in encoded_tensor_dict.items():
-            encoded_tensor_list.append(self.extractors[key](th.cat(obs, dim=1)))
-
-        return th.cat(encoded_tensor_list, dim=1)
+        return self.extractor(th.cat(obs_i_list, dim=1), th.cat(obs_o_list, dim=1))
 
 # DIY
 class NaiveExtractor(BaseFeaturesExtractor):
@@ -481,6 +475,7 @@ def get_actor_critic_arch(net_arch: Union[List[int], Dict[str, List[int]]]) -> T
 import torch.nn as nn
 import torch.nn.functional as F
 import torch
+import numpy as np
 
 
 class SelfAttention(nn.Module):
@@ -565,12 +560,17 @@ class TransformerBlock(nn.Module):
         return y
 
 class TransformerExtractor(nn.Module):
-    def __init__(self, emb=64, output_dim=64, heads=1, depth=1):
+    def __init__(self, self_dim, object_dim, max_horizon_count=8, emb=64, output_dim=64, heads=1, depth=1):
         super(TransformerExtractor, self).__init__()
 
+        self.max_horizon_count = max_horizon_count
+        assert object_dim % max_horizon_count == 0
+        self.emb_dim = emb
         self.num_tokens = output_dim
 
-        self.token_embedding = nn.Linear(1, emb)
+        self.my_encoder = nn.Linear(self_dim, emb)
+        self.obj_encoder = nn.Linear(object_dim // max_horizon_count, emb)
+
         self.output = nn.Linear(emb, output_dim)
 
         tblocks = []
@@ -579,16 +579,23 @@ class TransformerExtractor(nn.Module):
                 TransformerBlock(emb=emb, heads=heads))
         self.tblocks = nn.Sequential(*tblocks)
 
-    def forward(self, observations):
-        tokens = observations
-        tokens = tokens[:, :, None]
-        emb = self.token_embedding(tokens)
+    def forward(self, obs_i, obs_o):  ### bs * (n * o) / bs * (n_1 + n_2 + n_3)
+        my_token = self.my_encoder(obs_i)[:, None, :]
 
-        b, t, e = emb.size()
+        bs = obs_o.shape[0]
+        n = self.max_horizon_count
+        o = int(np.array(obs_o.shape).prod() / (bs * n))
 
-        x = self.tblocks(emb)
+        obs_o = obs_o.reshape(bs, n, o).reshape(bs * n, -1)
+        obj_token = self.obj_encoder(obs_o).reshape(bs, n, self.emb_dim)
 
-        x = self.output(x.view(b * t, e)).view(b, t, self.num_tokens)
+        tokens = torch.cat([my_token, obj_token], dim=1)
+
+        bs, t, e = tokens.size()
+
+        x = self.tblocks(tokens)
+
+        x = self.output(x.view(bs * t, e)).view(bs, t, self.num_tokens)
         y = x.mean(dim=1)
 
         return y
