@@ -596,6 +596,6 @@ class TransformerExtractor(nn.Module):
         x = self.tblocks(tokens)
 
         x = self.output(x.view(bs * t, e)).view(bs, t, self.num_tokens)
-        y = x.mean(dim=1)
+        y = x[:, 0, :]  #.mean(dim=1)
 
         return y
