@@ -827,6 +827,316 @@ class MultiInputActorCriticPolicy(ActorCriticPolicy):
 
 
 # DIY
+class HrlPolicy(ActorCriticPolicy):
+    def __init__(
+            self,
+            observation_space: gym.spaces.Dict,
+            action_space: gym.spaces.Space,
+            lr_schedule: Schedule,
+            net_arch: Optional[List[Union[int, Dict[str, List[int]]]]] = None,
+            activation_fn: Type[nn.Module] = nn.Tanh,
+            ortho_init: bool = True,
+            use_sde: bool = False,
+            log_std_init: float = 0.0,
+            full_std: bool = True,
+            sde_net_arch: Optional[List[int]] = None,
+            use_expln: bool = False,
+            squash_output: bool = False,
+            # features_extractor_class: Type[BaseFeaturesExtractor] = HybridExtractor,
+            features_extractor_class: Type[BaseFeaturesExtractor] = NaiveExtractor,
+            features_extractor_kwargs: Optional[Dict[str, Any]] = None,
+            normalize_images: bool = True,
+            optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
+            optimizer_kwargs: Optional[Dict[str, Any]] = None,
+    ):
+        super(HrlPolicy, self).__init__(
+            observation_space,
+            action_space,
+            lr_schedule,
+            net_arch,
+            activation_fn,
+            ortho_init,
+            use_sde,
+            log_std_init,
+            full_std,
+            sde_net_arch,
+            use_expln,
+            squash_output,
+            features_extractor_class,
+            features_extractor_kwargs,
+            normalize_images,
+            optimizer_class,
+            optimizer_kwargs,
+        )
+
+    def _build(self, lr_schedule: Schedule) -> None:
+        self.lower_mlp_extractor = MlpExtractor(
+            self.features_dim,
+            net_arch=self.net_arch,
+            activation_fn=self.activation_fn,
+            device=self.device,
+        )
+
+        self.upper_mlp_extractor = MlpExtractor(
+            self.features_dim,
+            net_arch=self.net_arch,
+            activation_fn=self.activation_fn,
+            device=self.device,
+        )
+
+        assert self.lower_mlp_extractor.latent_dim_pi == self.upper_mlp_extractor.latent_dim_pi
+        latent_dim_pi = self.lower_mlp_extractor.latent_dim_pi
+
+        if isinstance(self.action_dist, DiagGaussianDistribution):
+            self.lower_action_net, self.lower_log_std = self.action_dist.proba_distribution_net(
+                latent_dim=latent_dim_pi, log_std_init=self.log_std_init
+            )
+            self.upper_action_net, self.upper_log_std = self.action_dist.proba_distribution_net(
+                latent_dim=latent_dim_pi, log_std_init=self.log_std_init
+            )
+        elif isinstance(self.action_dist, StateDependentNoiseDistribution):
+            self.lower_action_net, self.lower_log_std = self.action_dist.proba_distribution_net(
+                latent_dim=latent_dim_pi, latent_sde_dim=latent_dim_pi, log_std_init=self.log_std_init
+            )
+            self.upper_action_net, self.upper_log_std = self.action_dist.proba_distribution_net(
+                latent_dim=latent_dim_pi, latent_sde_dim=latent_dim_pi, log_std_init=self.log_std_init
+            )
+        elif isinstance(self.action_dist,
+                        (CategoricalDistribution, MultiCategoricalDistribution, BernoulliDistribution)):
+            self.lower_action_net = self.action_dist.proba_distribution_net(latent_dim=latent_dim_pi)
+            self.upper_action_net = self.action_dist.proba_distribution_net(latent_dim=latent_dim_pi)
+        else:
+            raise NotImplementedError(f"Unsupported distribution '{self.action_dist}'.")
+
+        self.lower_value_net = nn.Linear(self.lower_mlp_extractor.latent_dim_vf, 1)
+        self.upper_value_net = nn.Linear(self.upper_mlp_extractor.latent_dim_vf, 1)
+        # Init weights: use orthogonal initialization
+        # with small initial weight for the output
+        if self.ortho_init:
+            module_gains = {
+                self.features_extractor: np.sqrt(2),
+                self.lower_mlp_extractor: np.sqrt(2),
+                self.upper_mlp_extractor: np.sqrt(2),
+                self.lower_action_net: 0.01,
+                self.lower_value_net: 1,
+                self.upper_action_net: 0.01,
+                self.upper_value_net: 1,
+            }
+            for module, gain in module_gains.items():
+                module.apply(partial(self.init_weights, gain=gain))
+
+        self.estimate_net = nn.Sequential(
+            nn.Linear(self.lower_mlp_extractor.latent_dim_vf, 1),
+            nn.Sigmoid(),
+        )
+        if self.ortho_init:
+            self.estimate_net.apply(partial(self.init_weights, gain=1))
+        self.optimizer = self.optimizer_class(self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)
+
+    def estimate_observations(self, obs: th.Tensor) -> th.Tensor:
+        features = self.extract_features(obs)
+        latent_pi, latent_vf = self.lower_mlp_extractor(features)
+        estimate_latent_vf = latent_vf.detach()
+        success_rates_pred = self.estimate_net(estimate_latent_vf)
+        return success_rates_pred
+
+    def predict_observation(self, observation: Dict[str, np.ndarray]):
+        assert isinstance(observation, dict)
+
+        observation, _ = self.obs_to_tensor(observation)
+        feature = self.extract_features(observation)
+        latent_pi, latent_vf = self.lower_mlp_extractor(feature)
+        success_probability = self.estimate_net(latent_vf).flatten().item()
+
+        return success_probability
+
+    def lower_forward(self, obs: th.Tensor, deterministic: bool = False) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
+        """
+        Forward pass in all the networks (actor and critic)
+
+        :param obs: Observation
+        :param deterministic: Whether to sample or use deterministic actions
+        :return: action, value and log probability of the action
+        """
+        # Preprocess the observation if needed
+        features = self.extract_features(obs)
+        latent_pi, latent_vf = self.lower_mlp_extractor(features)
+        # Evaluate the values for the given observations
+        values = self.lower_value_net(latent_vf)
+        distribution = self._lower_get_action_dist_from_latent(latent_pi)
+        actions = distribution.get_actions(deterministic=deterministic)
+        log_prob = distribution.log_prob(actions)
+        return actions, values, log_prob
+
+    def upper_forward(self, obs: th.Tensor, deterministic: bool = False) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
+        """
+        Forward pass in all the networks (actor and critic)
+
+        :param obs: Observation
+        :param deterministic: Whether to sample or use deterministic actions
+        :return: action, value and log probability of the action
+        """
+        # Preprocess the observation if needed
+        features = self.extract_features(obs)
+        latent_pi, latent_vf = self.upper_mlp_extractor(features)
+        # Evaluate the values for the given observations
+        values = self.upper_value_net(latent_vf)
+        distribution = self._upper_get_action_dist_from_latent(latent_pi)
+        actions = distribution.get_actions(deterministic=deterministic)
+        log_prob = distribution.log_prob(actions)
+        return actions, values, log_prob
+
+    def _lower_get_action_dist_from_latent(self, latent_pi: th.Tensor) -> Distribution:
+        """
+        Retrieve action distribution given the latent codes.
+
+        :param latent_pi: Latent code for the actor
+        :return: Action distribution
+        """
+        mean_actions = self.lower_action_net(latent_pi)
+
+        if isinstance(self.action_dist, DiagGaussianDistribution):
+            return self.action_dist.proba_distribution(mean_actions, self.log_std)
+        elif isinstance(self.action_dist, CategoricalDistribution):
+            # Here mean_actions are the logits before the softmax
+            return self.action_dist.proba_distribution(action_logits=mean_actions)
+        elif isinstance(self.action_dist, MultiCategoricalDistribution):
+            # Here mean_actions are the flattened logits
+            return self.action_dist.proba_distribution(action_logits=mean_actions)
+        elif isinstance(self.action_dist, BernoulliDistribution):
+            # Here mean_actions are the logits (before rounding to get the binary actions)
+            return self.action_dist.proba_distribution(action_logits=mean_actions)
+        elif isinstance(self.action_dist, StateDependentNoiseDistribution):
+            return self.action_dist.proba_distribution(mean_actions, self.log_std, latent_pi)
+        else:
+            raise ValueError("Invalid action distribution")
+
+    def _upper_get_action_dist_from_latent(self, latent_pi: th.Tensor) -> Distribution:
+        """
+        Retrieve action distribution given the latent codes.
+
+        :param latent_pi: Latent code for the actor
+        :return: Action distribution
+        """
+        mean_actions = self.upper_action_net(latent_pi)
+
+        if isinstance(self.action_dist, DiagGaussianDistribution):
+            return self.action_dist.proba_distribution(mean_actions, self.log_std)
+        elif isinstance(self.action_dist, CategoricalDistribution):
+            # Here mean_actions are the logits before the softmax
+            return self.action_dist.proba_distribution(action_logits=mean_actions)
+        elif isinstance(self.action_dist, MultiCategoricalDistribution):
+            # Here mean_actions are the flattened logits
+            return self.action_dist.proba_distribution(action_logits=mean_actions)
+        elif isinstance(self.action_dist, BernoulliDistribution):
+            # Here mean_actions are the logits (before rounding to get the binary actions)
+            return self.action_dist.proba_distribution(action_logits=mean_actions)
+        elif isinstance(self.action_dist, StateDependentNoiseDistribution):
+            return self.action_dist.proba_distribution(mean_actions, self.log_std, latent_pi)
+        else:
+            raise ValueError("Invalid action distribution")
+
+    def _lower_predict(self, observation: th.Tensor, deterministic: bool = False) -> th.Tensor:
+        """
+        Get the action according to the policy for a given observation.
+
+        :param observation:
+        :param deterministic: Whether to use stochastic or deterministic actions
+        :return: Taken action according to the policy
+        """
+        return self.lower_get_distribution(observation).get_actions(deterministic=deterministic)
+
+    def _upper_predict(self, observation: th.Tensor, deterministic: bool = False) -> th.Tensor:
+        """
+        Get the action according to the policy for a given observation.
+
+        :param observation:
+        :param deterministic: Whether to use stochastic or deterministic actions
+        :return: Taken action according to the policy
+        """
+        return self.upper_get_distribution(observation).get_actions(deterministic=deterministic)
+
+    def lower_evaluate_actions(self, obs: th.Tensor, actions: th.Tensor) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
+        """
+        Evaluate actions according to the current policy,
+        given the observations.
+
+        :param obs:
+        :param actions:
+        :return: estimated value, log likelihood of taking those actions
+            and entropy of the action distribution.
+        """
+        # Preprocess the observation if needed
+        features = self.extract_features(obs)
+        latent_pi, latent_vf = self.lower_mlp_extractor(features)
+        distribution = self._lower_get_action_dist_from_latent(latent_pi)
+        log_prob = distribution.log_prob(actions)
+        values = self.lower_value_net(latent_vf)
+        return values, log_prob, distribution.entropy()
+
+    def upper_evaluate_actions(self, obs: th.Tensor, actions: th.Tensor) -> Tuple[th.Tensor, th.Tensor, th.Tensor]:
+        """
+        Evaluate actions according to the current policy,
+        given the observations.
+
+        :param obs:
+        :param actions:
+        :return: estimated value, log likelihood of taking those actions
+            and entropy of the action distribution.
+        """
+        # Preprocess the observation if needed
+        features = self.extract_features(obs)
+        latent_pi, latent_vf = self.upper_mlp_extractor(features)
+        distribution = self._upper_get_action_dist_from_latent(latent_pi)
+        log_prob = distribution.log_prob(actions)
+        values = self.upper_value_net(latent_vf)
+        return values, log_prob, distribution.entropy()
+
+    def lower_get_distribution(self, obs: th.Tensor) -> Distribution:
+        """
+        Get the current policy distribution given the observations.
+
+        :param obs:
+        :return: the action distribution.
+        """
+        features = self.extract_features(obs)
+        latent_pi = self.lower_mlp_extractor.forward_actor(features)
+        return self._lower_get_action_dist_from_latent(latent_pi)
+
+    def upper_get_distribution(self, obs: th.Tensor) -> Distribution:
+        """
+        Get the current policy distribution given the observations.
+
+        :param obs:
+        :return: the action distribution.
+        """
+        features = self.extract_features(obs)
+        latent_pi = self.upper_mlp_extractor.forward_actor(features)
+        return self._upper_get_action_dist_from_latent(latent_pi)
+
+    def lower_predict_values(self, obs: th.Tensor) -> th.Tensor:
+        """
+        Get the estimated values according to the current policy given the observations.
+
+        :param obs:
+        :return: the estimated values.
+        """
+        features = self.extract_features(obs)
+        latent_vf = self.lower_mlp_extractor.forward_critic(features)
+        return self.lower_value_net(latent_vf)
+
+    def upper_predict_values(self, obs: th.Tensor) -> th.Tensor:
+        """
+        Get the estimated values according to the current policy given the observations.
+
+        :param obs:
+        :return: the estimated values.
+        """
+        features = self.extract_features(obs)
+        latent_vf = self.upper_mlp_extractor.forward_critic(features)
+        return self.upper_value_net(latent_vf)
+
+# DIY
 class HybridPolicy(ActorCriticPolicy):
     """
     HybridClass policy class for actor-critic algorithms.
