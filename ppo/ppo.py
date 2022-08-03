@@ -865,4 +865,4 @@ class HrlPPO:
             upper_time_elapsed += time.time() - self.upper_agent.start_time
 
             print(f'Round {iteration + 1} training ends!')
-            print('-' * 32 + f'Total Time Elapsed: {time.time() - start_time}' + '-' * 32)
+            print('-' * 64 + f' Total Time Elapsed: {time.time() - start_time} ' + '-' * 64)
