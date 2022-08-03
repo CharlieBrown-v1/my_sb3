@@ -668,9 +668,9 @@ class HybridPPO(PPO):
                 assert save_path is not None
                 accumulated_save_count += 1
                 self.save(save_path + "_" + str(accumulated_save_count))
-                self.logger.record("Save Model", accumulated_save_count)
-                self.logger.record("time/iterations", accumulated_iteration)
-                self.logger.record("time/total_timesteps", accumulated_total_timesteps + self.num_timesteps)
+                self.logger.record(f"{prefix}/Save Model", accumulated_save_count)
+                self.logger.record(f"{prefix}/time/iterations", accumulated_iteration)
+                self.logger.record(f"{prefix}/time/total_timesteps", accumulated_total_timesteps + self.num_timesteps)
                 self.logger.dump(step=accumulated_total_timesteps + self.num_timesteps)
 
             self.train_estimate(prefix=prefix)
