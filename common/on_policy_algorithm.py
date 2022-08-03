@@ -241,7 +241,26 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         raise NotImplementedError
 
     # DIY
-    def train_estimate(self) -> None:
+    def train_estimate(self, prefix='') -> None:
+        raise NotImplementedError
+
+    # DIY
+    def learn_estimate(
+            self,
+            total_timesteps: int,
+            callback: MaybeCallback = None,
+            log_interval: int = 1,
+            eval_env: Optional[GymEnv] = None,
+            eval_freq: int = -1,
+            n_eval_episodes: int = 5,
+            tb_log_name: str = "OnPolicyAlgorithm",
+            eval_log_path: Optional[str] = None,
+            reset_num_timesteps: bool = True,
+            save_interval: Optional[int] = None,
+            save_path: Optional[str] = None,
+            save_count: int = 0,
+            prefix: str = '',
+    ) -> None:
         raise NotImplementedError
 
     def learn(
@@ -258,7 +277,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             save_interval: Optional[int] = None,
             save_path: Optional[str] = None,
             save_count: int = 0,
-            train_estimate_flag: bool = False,
+            prefix: str = '',
     ) -> "OnPolicyAlgorithm":
         iteration = 0
 
@@ -283,17 +302,17 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             # Display training infos
             if log_interval is not None and iteration % log_interval == 0:
                 fps = int(self.num_timesteps / (time.time() - self.start_time))
-                self.logger.record("time/iterations", iteration, exclude="tensorboard")
+                self.logger.record(f"{prefix}/time/iterations", iteration, exclude="tensorboard")
                 if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
-                    self.logger.record("rollout/ep_rew_mean",
+                    self.logger.record(f"{prefix}/rollout/ep_rew_mean",
                                        safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
-                    self.logger.record("rollout/ep_len_mean",
+                    self.logger.record(f"{prefix}/rollout/ep_len_mean",
                                        safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
                     if len(self.ep_success_buffer) > 0:
-                        self.logger.record("rollout/success_rate", safe_mean(self.ep_success_buffer))
-                self.logger.record("time/fps", fps)
-                self.logger.record("time/time_elapsed", int(time.time() - self.start_time), exclude="tensorboard")
-                self.logger.record("time/total_timesteps", self.num_timesteps, exclude="tensorboard")
+                        self.logger.record(f"{prefix}/rollout/success_rate", safe_mean(self.ep_success_buffer))
+                self.logger.record(f"{prefix}/time/fps", fps)
+                self.logger.record(f"{prefix}/time/time_elapsed", int(time.time() - self.start_time), exclude="tensorboard")
+                self.logger.record(f"{prefix}/time/total_timesteps", self.num_timesteps, exclude="tensorboard")
                 self.logger.dump(step=self.num_timesteps)
 
             # DIY
@@ -301,15 +320,12 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 assert save_path is not None
                 save_count += 1
                 self.save(save_path + "_" + str(save_count))
-                self.logger.record("Save Model", save_count)
-                self.logger.record("time/iterations", iteration)
-                self.logger.record("time/total_timesteps", self.num_timesteps)
+                self.logger.record(f"{prefix}/Save Model", save_count)
+                self.logger.record(f"{prefix}/time/iterations", iteration)
+                self.logger.record(f"{prefix}/time/total_timesteps", self.num_timesteps)
                 self.logger.dump(step=self.num_timesteps)
 
-            if train_estimate_flag:
-                self.train_estimate()
-            else:
-                self.train()
+            self.train()
 
         callback.on_training_end()
 

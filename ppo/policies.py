@@ -22,4 +22,3 @@ register_policy("MultiInputPolicy", MultiInputPolicy)
 register_policy("HybridPolicy", HybridPolicy)
 register_policy("AttnPolicy", AttnPolicy)
 register_policy("NaivePolicy", NaivePolicy)
-
