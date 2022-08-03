@@ -823,7 +823,7 @@ class HrlPPO:
             print(f'Round {iteration + 1} training starts!')
 
             lower_single_steps = self.lower_agent.rollout_buffer.n_envs * self.lower_agent.rollout_buffer.buffer_size
-            self.lower_agent.learn(train_lower_iteration * lower_single_steps, callback, log_interval, eval_env, eval_freq, n_eval_episodes, tb_log_name, eval_log_path, reset_num_timesteps, lower_save_interval, lower_save_path,
+            self.lower_agent.learn(train_lower_iteration * lower_single_steps, callback, log_interval, eval_env, eval_freq, n_eval_episodes, f'{tb_log_name}_Lower', eval_log_path, reset_num_timesteps, lower_save_interval, lower_save_path,
                                    accumulated_save_count=lower_save_count,
                                    accumulated_time_elapsed=lower_time_elapsed,
                                    accumulated_iteration=lower_iteration,
@@ -838,7 +838,7 @@ class HrlPPO:
             self.load_estimate(latest_lower_model_path)
             assert self.estimate_agent is not None
             estimate_single_steps = self.estimate_agent.rollout_buffer.n_envs * self.estimate_agent.rollout_buffer.buffer_size
-            self.lower_agent.learn_estimate(train_estimate_iteration * estimate_single_steps, callback, log_interval, eval_env, eval_freq, n_eval_episodes, tb_log_name, eval_log_path, reset_num_timesteps, estimate_save_interval, estimate_save_path,
+            self.lower_agent.learn_estimate(train_estimate_iteration * estimate_single_steps, callback, log_interval, eval_env, eval_freq, n_eval_episodes, f'{tb_log_name}_Estimate', eval_log_path, reset_num_timesteps, estimate_save_interval, estimate_save_path,
                                             accumulated_save_count=estimate_save_count,
                                             accumulated_time_elapsed=estimate_time_elapsed,
                                             accumulated_iteration=estimate_iteration,
@@ -853,7 +853,7 @@ class HrlPPO:
             self.load_upper(latest_estimate_model_path)
             assert self.upper_agent is not None
             upper_single_steps = self.upper_agent.rollout_buffer.n_envs * self.upper_agent.rollout_buffer.buffer_size
-            self.upper_agent.learn(train_upper_iteration * upper_single_steps, callback, log_interval, eval_env, eval_freq, n_eval_episodes, tb_log_name, eval_log_path, reset_num_timesteps, upper_save_interval, upper_save_path,
+            self.upper_agent.learn(train_upper_iteration * upper_single_steps, callback, log_interval, eval_env, eval_freq, n_eval_episodes, f'{tb_log_name}_Upper', eval_log_path, reset_num_timesteps, upper_save_interval, upper_save_path,
                                    accumulated_save_count=upper_save_count,
                                    accumulated_time_elapsed=upper_time_elapsed,
                                    accumulated_iteration=upper_iteration,
