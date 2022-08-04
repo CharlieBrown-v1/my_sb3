@@ -1,3 +1,4 @@
+import os
 import warnings
 from typing import Any, Dict, Optional, Type, Union
 
@@ -686,6 +687,7 @@ class HybridPPO(PPO):
 
         return self
 
+
 import gym
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env.subproc_vec_env import SubprocVecEnv
@@ -847,7 +849,7 @@ class HrlPPO:
                                                                          n_eval_episodes=n_eval_episodes,
                                                                          eval_log_path=eval_log_path,
                                                                          reset_num_timesteps=reset_num_timesteps,
-                                                                         tb_log_name=f'{tb_log_name}/Lower/train')
+                                                                         tb_log_name=f'Lower')
 
         estimate_single_steps = self.estimate_agent.rollout_buffer.n_envs * self.estimate_agent.rollout_buffer.buffer_size
         estimate_total_steps = estimate_single_steps * total_iteration_count
@@ -857,7 +859,7 @@ class HrlPPO:
                                                                          n_eval_episodes=n_eval_episodes,
                                                                          eval_log_path=eval_log_path,
                                                                          reset_num_timesteps=reset_num_timesteps,
-                                                                         tb_log_name=f'{tb_log_name}/Estimate/train')
+                                                                         tb_log_name=f'Estimate')
 
         upper_single_steps = self.upper_agent.rollout_buffer.n_envs * self.upper_agent.rollout_buffer.buffer_size
         upper_total_steps = upper_single_steps * total_iteration_count
@@ -867,7 +869,7 @@ class HrlPPO:
                                                                          n_eval_episodes=n_eval_episodes,
                                                                          eval_log_path=eval_log_path,
                                                                          reset_num_timesteps=reset_num_timesteps,
-                                                                         tb_log_name=f'{tb_log_name}/Upper/train')
+                                                                         tb_log_name=f'Upper')
 
         estimate_callback.on_training_start(locals(), globals())
         lower_callback.on_training_start(locals(), globals())
@@ -876,8 +878,9 @@ class HrlPPO:
         for iteration in range(total_iteration_count):
             print(f'Round {iteration + 1} training starts!')
 
+            self.lower_agent.set_logger(self.lower_agent.logger)
             self.lower_agent.learn_one_step(train_lower_iteration * lower_single_steps,
-                                            lower_callback, log_interval, eval_env, eval_freq, n_eval_episodes, f'{tb_log_name}/Lower/train', eval_log_path, reset_num_timesteps, lower_save_interval, lower_save_path,
+                                            lower_callback, log_interval, eval_env, eval_freq, n_eval_episodes, f'Lower', eval_log_path, reset_num_timesteps, lower_save_interval, lower_save_path,
                                             accumulated_save_count=lower_save_count,
                                             accumulated_time_elapsed=lower_time_elapsed,
                                             accumulated_iteration=lower_iteration,
@@ -893,12 +896,12 @@ class HrlPPO:
             assert self.estimate_agent is not None
             estimate_single_steps = self.estimate_agent.rollout_buffer.n_envs * self.estimate_agent.rollout_buffer.buffer_size
             self.estimate_agent.learn_estimate(train_estimate_iteration * estimate_single_steps,
-                                                        estimate_callback, log_interval, eval_env, eval_freq, n_eval_episodes, f'{tb_log_name}/Estimate/train', eval_log_path, reset_num_timesteps, estimate_save_interval, estimate_save_path,
-                                                        accumulated_save_count=estimate_save_count,
-                                                        accumulated_time_elapsed=estimate_time_elapsed,
-                                                        accumulated_iteration=estimate_iteration,
+                                               estimate_callback, log_interval, eval_env, eval_freq, n_eval_episodes, f'Estimate', eval_log_path, reset_num_timesteps, estimate_save_interval, estimate_save_path,
+                                               accumulated_save_count=estimate_save_count,
+                                               accumulated_time_elapsed=estimate_time_elapsed,
+                                               accumulated_iteration=estimate_iteration,
                                                accumulated_total_timesteps=estimate_total_timesteps,
-                                                        prefix='Estimate')
+                                               prefix='Estimate')
             estimate_save_count += train_estimate_iteration // estimate_save_interval
             estimate_iteration += train_estimate_iteration
             estimate_time_elapsed += time.time() - self.estimate_agent.start_time
@@ -909,7 +912,7 @@ class HrlPPO:
             assert self.upper_agent is not None
             upper_single_steps = self.upper_agent.rollout_buffer.n_envs * self.upper_agent.rollout_buffer.buffer_size
             self.upper_agent.learn_one_step(train_upper_iteration * upper_single_steps,
-                                            callback, log_interval, eval_env, eval_freq, n_eval_episodes, f'{tb_log_name}/Upper/train', eval_log_path, reset_num_timesteps, upper_save_interval, upper_save_path,
+                                            callback, log_interval, eval_env, eval_freq, n_eval_episodes, f'Upper', eval_log_path, reset_num_timesteps, upper_save_interval, upper_save_path,
                                             accumulated_save_count=upper_save_count,
                                             accumulated_time_elapsed=upper_time_elapsed,
                                             accumulated_iteration=upper_iteration,
@@ -924,3 +927,26 @@ class HrlPPO:
             print('-' * 64 + f' Total Time Elapsed: {time.time() - start_time} ' + '-' * 64)
 
         lower_callback.on_training_end()
+
+    def load_agent(self, agent_name: str=None, model_path: str=None):
+        assert agent_name is not None, 'Agent name can not be None!'
+        assert model_path is not None, 'Model path can not be None!'
+        if agent_name == 'lower':
+            self.lower_agent.load(model_path)
+        elif agent_name == 'estimate':
+            self.estimate_agent.load(model_path)
+        elif agent_name == 'upper':
+            self.upper_agent.load(model_path)
+        else:
+            assert False, 'Agent name is invalid!'
+
+    def load_all_agent(self, model_dir: str=None):
+        agent_name_list = ['lower', 'estimate', 'upper']
+        agent_list = [self.lower_agent, self.estimate_agent, self.upper_agent]
+        postfix = '.zip'
+        for i in range(len(agent_name_list)):
+            for model_path in os.listdir(model_dir):
+                if agent_name_list[i] in model_path:
+                    self.load_agent(agent_name_list[i], os.path.join(model_dir, model_path.replace(postfix, '')))
+                    break
+            assert isinstance(agent_list[i], HybridPPO), f'{agent_name_list[i]} agent load failed!'
