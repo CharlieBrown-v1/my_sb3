@@ -335,3 +335,150 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         state_dicts = ["policy", "policy.optimizer"]
 
         return state_dicts, []
+
+
+class HybridOnPolicyAlgorithm(OnPolicyAlgorithm):
+    def __init__(
+            self,
+            policy: Union[str, Type[ActorCriticPolicy]],
+            env: Union[GymEnv, str],
+            learning_rate: Union[float, Schedule],
+            n_steps: int,
+            gamma: float,
+            gae_lambda: float,
+            ent_coef: float,
+            vf_coef: float,
+            max_grad_norm: float,
+            use_sde: bool,
+            sde_sample_freq: int,
+            policy_base: Type[BasePolicy] = ActorCriticPolicy,
+            tensorboard_log: Optional[str] = None,
+            create_eval_env: bool = False,
+            monitor_wrapper: bool = True,
+            policy_kwargs: Optional[Dict[str, Any]] = None,
+            verbose: int = 0,
+            seed: Optional[int] = None,
+            device: Union[th.device, str] = "auto",
+            _init_setup_model: bool = True,
+            supported_action_spaces: Optional[Tuple[gym.spaces.Space, ...]] = None,
+            is_two_stage_env: bool = False,
+    ):
+        super(HybridOnPolicyAlgorithm, self).__init__(policy, env, learning_rate, n_steps, gamma, gae_lambda, ent_coef, vf_coef, max_grad_norm, use_sde, sde_sample_freq, policy_base, tensorboard_log, create_eval_env, monitor_wrapper, policy_kwargs, verbose, seed, device, _init_setup_model, supported_action_spaces)
+
+        self.is_two_stage_env = is_two_stage_env
+
+
+    def train(self) -> None:
+        raise NotImplementedError
+
+    def train_estimate(self, prefix='') -> None:
+        raise NotImplementedError
+
+    def learn_estimate(self, total_timesteps: int, callback: MaybeCallback = None, log_interval: int = 1,
+                       eval_env: Optional[GymEnv] = None, eval_freq: int = -1, n_eval_episodes: int = 5,
+                       tb_log_name: str = "OnPolicyAlgorithm", eval_log_path: Optional[str] = None,
+                       reset_num_timesteps: bool = True, save_interval: Optional[int] = None,
+                       save_path: Optional[str] = None, save_count: int = 0, prefix: str = '') -> None:
+        raise NotImplementedError
+
+    def collect_rollouts(
+            self,
+            env: VecEnv,
+            callback: BaseCallback,
+            rollout_buffer: RolloutBuffer,
+            n_rollout_steps: int,
+    ) -> bool:
+        """
+        Collect experiences using the current policy and fill a ``RolloutBuffer``.
+        The term rollout here refers to the model-free notion and should not
+        be used with the concept of rollout used in model-based RL or planning.
+
+        :param env: The training environment
+        :param callback: Callback that will be called at each step
+            (and at the beginning and end of the rollout)
+        :param rollout_buffer: Buffer to fill with rollouts
+        :param n_rollout_steps: Number of experiences to collect per environment
+        :return: True if function returned with at least `n_rollout_steps`
+            collected, False if callback terminated rollout prematurely.
+        """
+        assert self._last_obs is not None, "No previous observation was provided"
+        # Switch to eval mode (this affects batch norm / dropout)
+        self.policy.set_training_mode(False)
+
+        n_steps = 0
+        rollout_buffer.reset()
+        # Sample new weights for the state dependent exploration
+        if self.use_sde:
+            self.policy.reset_noise(env.num_envs)
+
+        callback.on_rollout_start()
+
+        while n_steps < n_rollout_steps:
+            if self.use_sde and self.sde_sample_freq > 0 and n_steps % self.sde_sample_freq == 0:
+                # Sample a new noise matrix
+                self.policy.reset_noise(env.num_envs)
+
+            with th.no_grad():
+                # Convert to pytorch tensor or to TensorDict
+                obs_tensor = obs_as_tensor(self._last_obs, self.device)
+                actions, values, log_probs = self.policy.forward(obs_tensor)
+            actions = actions.cpu().numpy()
+
+            # Rescale and perform action
+            clipped_actions = actions
+            # Clip the actions to avoid out of bound error
+            if isinstance(self.action_space, gym.spaces.Box):
+                clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
+
+            new_obs, rewards, dones, infos = env.step(clipped_actions)
+
+            self.num_timesteps += env.num_envs
+
+            # Give access to local variables
+            callback.update_locals(locals())
+            if callback.on_step() is False:
+                return False
+
+            n_steps += 1
+
+            if isinstance(self.action_space, gym.spaces.Discrete):
+                # Reshape in case of discrete action
+                actions = actions.reshape(-1, 1)
+
+            # DIY
+            if self.is_two_stage_env:
+                train_dones = np.array([info['train_done'] for info in infos])
+                train_is_successes = th.as_tensor([info['train_is_success'] for info in infos]).to(self.device)
+
+                rollout_buffer.add(self._last_obs, actions, rewards, self._last_episode_starts, values, log_probs,
+                                   train_is_successes)
+            else:
+                rollout_buffer.add(self._last_obs, actions, rewards, self._last_episode_starts, values, log_probs)
+
+            self._last_obs = new_obs
+
+            # DIY
+            if self.is_two_stage_env:
+                self._last_episode_starts = train_dones
+                self._two_stage_env_update_info_buffer(infos, dones)
+            else:
+                self._last_episode_starts = dones
+                self._update_info_buffer(infos, dones)
+
+        with th.no_grad():
+            # Compute value for the last timestep
+            obs_tensor = obs_as_tensor(new_obs, self.device)
+            _, values, _ = self.policy.forward(obs_tensor)
+
+        # DIY
+        if self.is_two_stage_env:
+            rollout_buffer.compute_returns_and_advantage(last_values=values, dones=train_dones)
+        else:
+            rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
+
+        callback.on_rollout_end()
+
+        return True
+
+    def _two_stage_env_update_info_buffer(self, infos):
+        raise NotImplementedError

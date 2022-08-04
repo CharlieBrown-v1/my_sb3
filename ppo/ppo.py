@@ -7,7 +7,7 @@ import torch as th
 from gym import spaces
 from torch.nn import functional as F
 
-from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm
+from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm, HybridOnPolicyAlgorithm
 from stable_baselines3.common.policies import ActorCriticPolicy, HybridPolicy, AttnPolicy, NaivePolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import explained_variance, get_schedule_fn
@@ -381,9 +381,119 @@ class PPO(OnPolicyAlgorithm):
 
 import time
 from stable_baselines3.common.utils import safe_mean
+from collections import deque
 
 
-class HybridPPO(PPO):
+class HybridPPO(HybridOnPolicyAlgorithm):
+    def __init__(
+            self,
+            policy: Union[str, Union[Type[ActorCriticPolicy], Type[HybridPolicy], Type[AttnPolicy], Type[NaivePolicy]]],
+            env: Union[GymEnv, str],
+            learning_rate: Union[float, Schedule] = 3e-4,
+            n_steps: int = 2048,
+            batch_size: int = 64,
+            n_epochs: int = 10,
+            gamma: float = 0.99,
+            gae_lambda: float = 0.95,
+            clip_range: Union[float, Schedule] = 0.2,
+            clip_range_vf: Union[None, float, Schedule] = None,
+            ent_coef: float = 0.0,
+            vf_coef: float = 0.5,
+            max_grad_norm: float = 0.5,
+            use_sde: bool = False,
+            sde_sample_freq: int = -1,
+            target_kl: Optional[float] = None,
+            tensorboard_log: Optional[str] = None,
+            create_eval_env: bool = False,
+            policy_kwargs: Optional[Dict[str, Any]] = None,
+            verbose: int = 0,
+            seed: Optional[int] = None,
+            device: Union[th.device, str] = "auto",
+            _init_setup_model: bool = True,
+            is_two_stage_env: bool = False,
+    ):
+
+        super(HybridPPO, self).__init__(
+            policy,
+            env,
+            learning_rate=learning_rate,
+            n_steps=n_steps,
+            gamma=gamma,
+            gae_lambda=gae_lambda,
+            ent_coef=ent_coef,
+            vf_coef=vf_coef,
+            max_grad_norm=max_grad_norm,
+            use_sde=use_sde,
+            sde_sample_freq=sde_sample_freq,
+            tensorboard_log=tensorboard_log,
+            policy_kwargs=policy_kwargs,
+            verbose=verbose,
+            device=device,
+            create_eval_env=create_eval_env,
+            seed=seed,
+            _init_setup_model=False,
+            supported_action_spaces=(
+                spaces.Box,
+                spaces.Discrete,
+                spaces.MultiDiscrete,
+                spaces.MultiBinary,
+            ),
+            is_two_stage_env=is_two_stage_env,
+        )
+
+        # Sanity check, otherwise it will lead to noisy gradient and NaN
+        # because of the advantage normalization
+        assert (
+                batch_size > 1
+        ), "`batch_size` must be greater than 1. See https://github.com/DLR-RM/stable-baselines3/issues/440"
+
+        if self.env is not None:
+            # Check that `n_steps * n_envs > 1` to avoid NaN
+            # when doing advantage normalization
+            buffer_size = self.env.num_envs * self.n_steps
+            assert (
+                    buffer_size > 1
+            ), f"`n_steps * n_envs` must be greater than 1. Currently n_steps={self.n_steps} and n_envs={self.env.num_envs}"
+            # Check that the rollout buffer size is a multiple of the mini-batch size
+            untruncated_batches = buffer_size // batch_size
+            if buffer_size % batch_size > 0:
+                warnings.warn(
+                    f"You have specified a mini-batch size of {batch_size},"
+                    f" but because the `RolloutBuffer` is of size `n_steps * n_envs = {buffer_size}`,"
+                    f" after every {untruncated_batches} untruncated mini-batches,"
+                    f" there will be a truncated mini-batch of size {buffer_size % batch_size}\n"
+                    f"We recommend using a `batch_size` that is a factor of `n_steps * n_envs`.\n"
+                    f"Info: (n_steps={self.n_steps} and n_envs={self.env.num_envs})"
+                )
+        self.batch_size = batch_size
+        self.n_epochs = n_epochs
+        self.clip_range = clip_range
+        self.clip_range_vf = clip_range_vf
+        self.target_kl = target_kl
+
+        # DIY
+        self.success_rate_threshold = 0.7
+        self.removal_success_buffer = None
+        self.global_success_buffer = None
+
+        if _init_setup_model:
+            self._setup_model()
+
+        if is_two_stage_env:
+            self.removal_success_buffer = deque(maxlen=100)
+            self.global_success_buffer = deque(maxlen=100)
+
+    def _setup_model(self) -> None:
+        super(HybridPPO, self)._setup_model()
+
+        # Initialize schedules for policy/value clipping
+        self.clip_range = get_schedule_fn(self.clip_range)
+        if self.clip_range_vf is not None:
+            if isinstance(self.clip_range_vf, (float, int)):
+                assert self.clip_range_vf > 0, "`clip_range_vf` must be positive, " "pass `None` to deactivate vf clipping"
+
+            self.clip_range_vf = get_schedule_fn(self.clip_range_vf)
+
     def train(self, prefix=''):
         # Switch to train mode (this affects batch norm / dropout)
         self.policy.set_training_mode(True)
@@ -470,19 +580,19 @@ class HybridPPO(PPO):
         explained_var = explained_variance(self.rollout_buffer.values.flatten(),
                                            self.rollout_buffer.returns.flatten())
         # Logs
-        self.logger.record(f"{prefix}/train/entropy_loss", np.mean(entropy_losses))
-        self.logger.record(f"{prefix}/train/policy_gradient_loss", np.mean(pg_losses))
-        self.logger.record(f"{prefix}/train/value_loss", np.mean(value_losses))
-        self.logger.record(f"{prefix}/train/approx_kl", np.mean(approx_kl_divs))
-        self.logger.record(f"{prefix}/train/clip_fraction", np.mean(clip_fractions))
-        self.logger.record(f"{prefix}/train/loss", loss.item())
-        self.logger.record(f"{prefix}/train/explained_variance", explained_var)
+        self.logger.record(f"{prefix} train/entropy_loss", np.mean(entropy_losses))
+        self.logger.record(f"{prefix} train/policy_gradient_loss", np.mean(pg_losses))
+        self.logger.record(f"{prefix} train/value_loss", np.mean(value_losses))
+        self.logger.record(f"{prefix} train/approx_kl", np.mean(approx_kl_divs))
+        self.logger.record(f"{prefix} train/clip_fraction", np.mean(clip_fractions))
+        self.logger.record(f"{prefix} train/loss", loss.item())
+        self.logger.record(f"{prefix} train/explained_variance", explained_var)
         if hasattr(self.policy, "log_std"):
-            self.logger.record(f"{prefix}/train/std", th.exp(self.policy.log_std).mean().item())
-        self.logger.record(f"{prefix}/train/n_updates", self._n_updates, exclude="tensorboard")
-        self.logger.record(f"{prefix}/train/clip_range", clip_range)
+            self.logger.record(f"{prefix} train/std", th.exp(self.policy.log_std).mean().item())
+        self.logger.record(f"{prefix} train/n_updates", self._n_updates, exclude="tensorboard")
+        self.logger.record(f"{prefix} train/clip_range", clip_range)
         if self.clip_range_vf is not None:
-            self.logger.record(f"{prefix}/train/clip_range_vf", clip_range_vf)
+            self.logger.record(f"{prefix} train/clip_range_vf", clip_range_vf)
 
     def train_estimate(self, prefix=''):
         assert self.is_hybrid_policy
@@ -538,8 +648,8 @@ class HybridPPO(PPO):
                 self.policy.optimizer.step()
             if not continue_training:
                 break
-        self.logger.record(f"{prefix}/estimate/bce_loss", np.mean(estimate_losses))
-        self.logger.record(f"{prefix}/estimate/right_rate", np.mean(estimate_right_rates))
+        self.logger.record(f"{prefix} estimate/bce_loss", np.mean(estimate_losses))
+        self.logger.record(f"{prefix} estimate/right_rate", np.mean(estimate_right_rates))
 
     def learn_one_step(
             self,
@@ -581,18 +691,26 @@ class HybridPPO(PPO):
             # Display training infos
             if log_interval is not None and accumulated_iteration % log_interval == 0:
                 fps = int(accumulated_total_timesteps + self.num_timesteps / (accumulated_time_elapsed + time.time() - self.start_time))
-                self.logger.record(f"{prefix}/time/iterations", accumulated_iteration, exclude="tensorboard")
+                self.logger.record(f"{prefix} time/iterations", accumulated_iteration, exclude="tensorboard")
+
                 if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
-                    self.logger.record(f"{prefix}/rollout/ep_rew_mean",
+                    self.logger.record(f"{prefix} rollout/ep_rew_mean",
                                        safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
-                    self.logger.record(f"{prefix}/rollout/ep_len_mean",
+                    self.logger.record(f"{prefix} rollout/ep_len_mean",
                                        safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
                     if len(self.ep_success_buffer) > 0:
-                        self.logger.record(f"{prefix}/rollout/success_rate", safe_mean(self.ep_success_buffer))
-                self.logger.record(f"{prefix}/time/fps", fps)
-                self.logger.record(f"{prefix}/time/time_elapsed", int(accumulated_time_elapsed + time.time() - self.start_time),
+                        self.logger.record(f"{prefix} rollout/success_rate", safe_mean(self.ep_success_buffer))
+
+                    if self.is_two_stage_env:
+                        if len(self.removal_success_buffer) > 0:
+                            self.logger.record(f"{prefix} rollout/stage_1 success_rate", safe_mean(self.removal_success_buffer))
+                        if len(self.global_success_buffer) > 0:
+                            self.logger.record(f"{prefix} rollout/stage_2 success_rate", safe_mean(self.global_success_buffer))
+
+                self.logger.record(f"{prefix} time/fps", fps)
+                self.logger.record(f"{prefix} time/time_elapsed", int(accumulated_time_elapsed + time.time() - self.start_time),
                                    exclude="tensorboard")
-                self.logger.record(f"{prefix}/time/total_timesteps", accumulated_total_timesteps + self.num_timesteps, exclude="tensorboard")
+                self.logger.record(f"{prefix} time/total_timesteps", accumulated_total_timesteps + self.num_timesteps, exclude="tensorboard")
                 self.logger.dump(step=accumulated_total_timesteps + self.num_timesteps)
 
             # DIY
@@ -600,9 +718,9 @@ class HybridPPO(PPO):
                 assert save_path is not None
                 accumulated_save_count += 1
                 self.save(save_path + "_" + str(accumulated_save_count))
-                self.logger.record(f"{prefix}/Save Model", accumulated_save_count)
-                self.logger.record(f"{prefix}/time/iterations", accumulated_iteration)
-                self.logger.record(f"{prefix}/time/total_timesteps", accumulated_total_timesteps + self.num_timesteps)
+                self.logger.record(f"{prefix} Save Model", accumulated_save_count)
+                self.logger.record(f"{prefix} time/iterations", accumulated_iteration)
+                self.logger.record(f"{prefix} time/total_timesteps", accumulated_total_timesteps + self.num_timesteps)
                 self.logger.dump(step=accumulated_total_timesteps + self.num_timesteps)
 
             self.train(prefix=prefix)
@@ -657,18 +775,26 @@ class HybridPPO(PPO):
             # Display training infos
             if log_interval is not None and accumulated_iteration % log_interval == 0:
                 fps = int(accumulated_total_timesteps + self.num_timesteps / (accumulated_time_elapsed + time.time() - self.start_time))
-                self.logger.record(f"{prefix}/time/iterations", accumulated_iteration, exclude="tensorboard")
+                self.logger.record(f"{prefix} time/iterations", accumulated_iteration, exclude="tensorboard")
+
                 if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
-                    self.logger.record(f"{prefix}/rollout/ep_rew_mean",
+                    self.logger.record(f"{prefix} rollout/ep_rew_mean",
                                        safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
-                    self.logger.record(f"{prefix}/rollout/ep_len_mean",
+                    self.logger.record(f"{prefix} rollout/ep_len_mean",
                                        safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
                     if len(self.ep_success_buffer) > 0:
-                        self.logger.record(f"{prefix}/rollout/success_rate", safe_mean(self.ep_success_buffer))
-                self.logger.record(f"{prefix}/time/fps", fps)
-                self.logger.record(f"{prefix}/time/time_elapsed", int(accumulated_time_elapsed + time.time() - self.start_time),
+                        self.logger.record(f"{prefix} rollout/success_rate", safe_mean(self.ep_success_buffer))
+
+                    if self.is_two_stage_env:
+                        if len(self.removal_success_buffer) > 0:
+                            self.logger.record(f"{prefix} rollout/stage_1 success_rate", safe_mean(self.removal_success_buffer))
+                        if len(self.global_success_buffer) > 0:
+                            self.logger.record(f"{prefix} rollout/stage_2 success_rate", safe_mean(self.global_success_buffer))
+
+                self.logger.record(f"{prefix} time/fps", fps)
+                self.logger.record(f"{prefix} time/time_elapsed", int(accumulated_time_elapsed + time.time() - self.start_time),
                                    exclude="tensorboard")
-                self.logger.record(f"{prefix}/time/total_timesteps", accumulated_total_timesteps + self.num_timesteps, exclude="tensorboard")
+                self.logger.record(f"{prefix} time/total_timesteps", accumulated_total_timesteps + self.num_timesteps, exclude="tensorboard")
                 self.logger.dump(step=accumulated_total_timesteps + self.num_timesteps)
 
             # DIY
@@ -676,9 +802,9 @@ class HybridPPO(PPO):
                 assert save_path is not None
                 accumulated_save_count += 1
                 self.save(save_path + "_" + str(accumulated_save_count))
-                self.logger.record(f"{prefix}/Save Model", accumulated_save_count)
-                self.logger.record(f"{prefix}/time/iterations", accumulated_iteration)
-                self.logger.record(f"{prefix}/time/total_timesteps", accumulated_total_timesteps + self.num_timesteps)
+                self.logger.record(f"{prefix} Save Model", accumulated_save_count)
+                self.logger.record(f"{prefix} time/iterations", accumulated_iteration)
+                self.logger.record(f"{prefix} time/total_timesteps", accumulated_total_timesteps + self.num_timesteps)
                 self.logger.dump(step=accumulated_total_timesteps + self.num_timesteps)
 
             self.train_estimate(prefix=prefix)
@@ -687,6 +813,28 @@ class HybridPPO(PPO):
 
         return self
 
+    def _two_stage_env_update_info_buffer(self, infos, dones):
+        assert self.removal_success_buffer is not None and self.global_success_buffer is not None
+        assert dones is not None
+
+        for idx, info in enumerate(infos):
+            maybe_ep_info = info.get("episode")
+            maybe_is_success = info.get("is_success")
+
+            maybe_removal_done = info.get('removal_done')
+            maybe_removal_success = info.get('removal_success')
+
+            maybe_global_done = info.get('global_done')
+            maybe_global_success = info.get('global_success')
+
+            if maybe_ep_info is not None:
+                self.ep_info_buffer.extend([maybe_ep_info])
+            if maybe_is_success is not None and dones[idx]:
+                self.ep_success_buffer.append(maybe_is_success)
+            if maybe_removal_done:
+                self.removal_success_buffer.append(maybe_removal_success)
+            if maybe_global_done:
+                self.global_success_buffer.append(maybe_global_success)
 
 import gym
 from stable_baselines3.common.monitor import Monitor
@@ -770,15 +918,18 @@ class HrlPPO:
         self.lower_agent = HybridPPO(lower_policy, lower_env, learning_rate, n_steps,
                                      batch_size, n_epochs, gamma, gae_lambda, clip_range, clip_range_vf, ent_coef,
                                      vf_coef, max_grad_norm, use_sde, sde_sample_freq, target_kl, tensorboard_log,
-                                     create_eval_env, policy_kwargs, verbose, seed, device, _init_setup_model)
+                                     create_eval_env, policy_kwargs, verbose, seed, device, _init_setup_model,
+                                     is_two_stage_env=True)
         self.estimate_agent = HybridPPO(estimate_policy, estimate_env, learning_rate, n_steps,
                                         batch_size, n_epochs, gamma, gae_lambda, clip_range, clip_range_vf, ent_coef,
                                         vf_coef, max_grad_norm, use_sde, sde_sample_freq, target_kl, tensorboard_log,
-                                        create_eval_env, policy_kwargs, verbose, seed, device, _init_setup_model)
+                                        create_eval_env, policy_kwargs, verbose, seed, device, _init_setup_model,
+                                        is_two_stage_env=True)
         self.upper_agent = HybridPPO(upper_policy, upper_env, learning_rate, n_steps,
                                      batch_size, n_epochs, gamma, gae_lambda, clip_range, clip_range_vf, ent_coef,
                                      vf_coef, max_grad_norm, use_sde, sde_sample_freq, target_kl, tensorboard_log,
-                                     create_eval_env, policy_kwargs, verbose, seed, device, _init_setup_model)
+                                     create_eval_env, policy_kwargs, verbose, seed, device, _init_setup_model,
+                                     is_two_stage_env=False)
 
         self.wrapped_estimate_env = estimate_env
         self.upper_policy = upper_policy
@@ -931,6 +1082,7 @@ class HrlPPO:
     def load_agent(self, agent_name: str=None, model_path: str=None):
         assert agent_name is not None, 'Agent name can not be None!'
         assert model_path is not None, 'Model path can not be None!'
+        agent_name_list = ['lower', 'estimate', 'upper']
         if agent_name == 'lower':
             self.lower_agent.load(model_path)
         elif agent_name == 'estimate':
@@ -938,7 +1090,7 @@ class HrlPPO:
         elif agent_name == 'upper':
             self.upper_agent.load(model_path)
         else:
-            assert False, 'Agent name is invalid!'
+            assert False, f'Agent name is invalid!\nAgent name must in {agent_name_list}'
 
     def load_all_agent(self, model_dir: str=None):
         agent_name_list = ['lower', 'estimate', 'upper']
