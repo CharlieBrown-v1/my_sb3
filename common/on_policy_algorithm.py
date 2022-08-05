@@ -115,14 +115,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         )
         self.policy = self.policy.to(self.device)
 
-        # DIY
-        self.is_hybrid_policy = isinstance(self.policy, HybridPolicy) or isinstance(self.policy, AttnPolicy) or isinstance(self.policy, NaivePolicy)
-
-        # DIY
-        if self.is_hybrid_policy:
-            buffer_cls = HybridDictRolloutBuffer
-        else:
-            buffer_cls = DictRolloutBuffer if isinstance(self.observation_space, gym.spaces.Dict) else RolloutBuffer
+        buffer_cls = DictRolloutBuffer if isinstance(self.observation_space, gym.spaces.Dict) else RolloutBuffer
 
         self.rollout_buffer = buffer_cls(
             self.n_steps,
@@ -200,34 +193,18 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 # Reshape in case of discrete action
                 actions = actions.reshape(-1, 1)
 
-            # DIY
-            if self.is_hybrid_policy:
-                train_dones = np.array([info['train_done'] for info in infos])
-                train_is_successes = th.as_tensor([info['train_is_success'] for info in infos]).to(self.device)
-
-                rollout_buffer.add(self._last_obs, actions, rewards, self._last_episode_starts, values, log_probs,
-                                   train_is_successes)
-            else:
-                rollout_buffer.add(self._last_obs, actions, rewards, self._last_episode_starts, values, log_probs)
+            rollout_buffer.add(self._last_obs, actions, rewards, self._last_episode_starts, values, log_probs)
 
             self._last_obs = new_obs
 
-            # DIY
-            if self.is_hybrid_policy:
-                self._last_episode_starts = train_dones
-            else:
-                self._last_episode_starts = dones
+            self._last_episode_starts = dones
 
         with th.no_grad():
             # Compute value for the last timestep
             obs_tensor = obs_as_tensor(new_obs, self.device)
             _, values, _ = self.policy.forward(obs_tensor)
 
-        # DIY
-        if self.is_hybrid_policy:
-            rollout_buffer.compute_returns_and_advantage(last_values=values, dones=train_dones)
-        else:
-            rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
+        rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
 
         callback.on_rollout_end()
 
@@ -238,29 +215,6 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         Consume current rollout data and update policy parameters.
         Implemented by individual algorithms.
         """
-        raise NotImplementedError
-
-    # DIY
-    def train_estimate(self, prefix='') -> None:
-        raise NotImplementedError
-
-    # DIY
-    def learn_estimate(
-            self,
-            total_timesteps: int,
-            callback: MaybeCallback = None,
-            log_interval: int = 1,
-            eval_env: Optional[GymEnv] = None,
-            eval_freq: int = -1,
-            n_eval_episodes: int = 5,
-            tb_log_name: str = "OnPolicyAlgorithm",
-            eval_log_path: Optional[str] = None,
-            reset_num_timesteps: bool = True,
-            save_interval: Optional[int] = None,
-            save_path: Optional[str] = None,
-            save_count: int = 0,
-            prefix: str = '',
-    ) -> None:
         raise NotImplementedError
 
     def learn(
@@ -277,7 +231,6 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             save_interval: Optional[int] = None,
             save_path: Optional[str] = None,
             save_count: int = 0,
-            prefix: str = '',
     ) -> "OnPolicyAlgorithm":
         iteration = 0
 
@@ -302,17 +255,17 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             # Display training infos
             if log_interval is not None and iteration % log_interval == 0:
                 fps = int(self.num_timesteps / (time.time() - self.start_time))
-                self.logger.record(f"{prefix}/time/iterations", iteration, exclude="tensorboard")
+                self.logger.record(f"time/iterations", iteration, exclude="tensorboard")
                 if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
-                    self.logger.record(f"{prefix}/rollout/ep_rew_mean",
+                    self.logger.record(f"rollout/ep_rew_mean",
                                        safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
-                    self.logger.record(f"{prefix}/rollout/ep_len_mean",
+                    self.logger.record(f"rollout/ep_len_mean",
                                        safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
                     if len(self.ep_success_buffer) > 0:
-                        self.logger.record(f"{prefix}/rollout/success_rate", safe_mean(self.ep_success_buffer))
-                self.logger.record(f"{prefix}/time/fps", fps)
-                self.logger.record(f"{prefix}/time/time_elapsed", int(time.time() - self.start_time), exclude="tensorboard")
-                self.logger.record(f"{prefix}/time/total_timesteps", self.num_timesteps, exclude="tensorboard")
+                        self.logger.record(f"rollout/success_rate", safe_mean(self.ep_success_buffer))
+                self.logger.record(f"time/fps", fps)
+                self.logger.record(f"time/time_elapsed", int(time.time() - self.start_time), exclude="tensorboard")
+                self.logger.record(f"time/total_timesteps", self.num_timesteps, exclude="tensorboard")
                 self.logger.dump(step=self.num_timesteps)
 
             # DIY
@@ -320,9 +273,9 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 assert save_path is not None
                 save_count += 1
                 self.save(save_path + "_" + str(save_count))
-                self.logger.record(f"{prefix}/Save Model", save_count)
-                self.logger.record(f"{prefix}/time/iterations", iteration)
-                self.logger.record(f"{prefix}/time/total_timesteps", self.num_timesteps)
+                self.logger.record(f"Save Model", save_count)
+                self.logger.record(f"time/iterations", iteration)
+                self.logger.record(f"time/total_timesteps", self.num_timesteps)
                 self.logger.dump(step=self.num_timesteps)
 
             self.train()
@@ -367,18 +320,45 @@ class HybridOnPolicyAlgorithm(OnPolicyAlgorithm):
 
         self.is_two_stage_env = is_two_stage_env
 
+    def _setup_model(self) -> None:
+        self._setup_lr_schedule()
+        self.set_random_seed(self.seed)
+
+        self.policy = self.policy_class(  # pytype:disable=not-instantiable
+            self.observation_space,
+            self.action_space,
+            self.lr_schedule,
+            use_sde=self.use_sde,
+            **self.policy_kwargs  # pytype:disable=not-instantiable
+        )
+        self.policy = self.policy.to(self.device)
+
+        if self.is_two_stage_env:
+            buffer_cls = HybridDictRolloutBuffer
+        else:
+            buffer_cls = DictRolloutBuffer if isinstance(self.observation_space, gym.spaces.Dict) else RolloutBuffer
+
+        self.rollout_buffer = buffer_cls(
+            self.n_steps,
+            self.observation_space,
+            self.action_space,
+            self.device,
+            gamma=self.gamma,
+            gae_lambda=self.gae_lambda,
+            n_envs=self.n_envs,
+        )
 
     def train(self) -> None:
         raise NotImplementedError
 
-    def train_estimate(self, prefix='') -> None:
+    def train_estimate(self, prefix=None) -> None:
         raise NotImplementedError
 
     def learn_estimate(self, total_timesteps: int, callback: MaybeCallback = None, log_interval: int = 1,
                        eval_env: Optional[GymEnv] = None, eval_freq: int = -1, n_eval_episodes: int = 5,
                        tb_log_name: str = "OnPolicyAlgorithm", eval_log_path: Optional[str] = None,
                        reset_num_timesteps: bool = True, save_interval: Optional[int] = None,
-                       save_path: Optional[str] = None, save_count: int = 0, prefix: str = '') -> None:
+                       save_path: Optional[str] = None, save_count: int = 0, prefix: str = None) -> None:
         raise NotImplementedError
 
     def collect_rollouts(
@@ -445,7 +425,6 @@ class HybridOnPolicyAlgorithm(OnPolicyAlgorithm):
                 # Reshape in case of discrete action
                 actions = actions.reshape(-1, 1)
 
-            # DIY
             if self.is_two_stage_env:
                 train_dones = np.array([info['train_done'] for info in infos])
                 train_is_successes = th.as_tensor([info['train_is_success'] for info in infos]).to(self.device)
@@ -457,7 +436,6 @@ class HybridOnPolicyAlgorithm(OnPolicyAlgorithm):
 
             self._last_obs = new_obs
 
-            # DIY
             if self.is_two_stage_env:
                 self._last_episode_starts = train_dones
                 self._two_stage_env_update_info_buffer(infos, dones)
@@ -470,7 +448,6 @@ class HybridOnPolicyAlgorithm(OnPolicyAlgorithm):
             obs_tensor = obs_as_tensor(new_obs, self.device)
             _, values, _ = self.policy.forward(obs_tensor)
 
-        # DIY
         if self.is_two_stage_env:
             rollout_buffer.compute_returns_and_advantage(last_values=values, dones=train_dones)
         else:
@@ -480,5 +457,5 @@ class HybridOnPolicyAlgorithm(OnPolicyAlgorithm):
 
         return True
 
-    def _two_stage_env_update_info_buffer(self, infos):
+    def _two_stage_env_update_info_buffer(self, infos, dones):
         raise NotImplementedError

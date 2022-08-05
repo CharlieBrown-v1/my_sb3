@@ -289,64 +289,6 @@ class PPO(OnPolicyAlgorithm):
         if self.clip_range_vf is not None:
             self.logger.record("train/clip_range_vf", clip_range_vf)
 
-    # DIY
-    def train_estimate(self, prefix='') -> None:
-        assert self.is_hybrid_policy
-
-        self.policy.set_training_mode(True)
-        self._update_learning_rate(self.policy.optimizer)
-
-        estimate_losses = []
-        estimate_right_rates = []
-
-        min_loss = th.inf
-        loss_remain_times = 0
-        buffer_size = self.env.num_envs * self.n_steps
-        continue_training = True
-
-        for _ in range(self.n_epochs):
-            for rollout_data in self.rollout_buffer.get(self.batch_size):
-                if loss_remain_times > buffer_size // self.batch_size:
-                    continue_training = False
-                    break
-                # Re-sample the noise matrix because the log_std has changed
-                if self.use_sde:
-                    self.policy.reset_noise(self.batch_size)
-
-                success_rates_pred = self.policy.estimate_observations(rollout_data.observations).flatten()
-
-                loss = F.binary_cross_entropy(success_rates_pred, rollout_data.is_successes)
-
-                loss_item = loss.item()
-                if loss_item < min_loss:
-                    min_loss = loss_item
-                    loss_remain_times = 0
-                else:
-                    loss_remain_times += 1
-                estimate_losses.append(loss_item)
-
-
-                is_successes_indicate = rollout_data.is_successes.long()
-                cuda_success_rate_threshold = th.as_tensor(self.success_rate_threshold).to(self.device)
-                pred_is_success_indicate = th.where(success_rates_pred <= cuda_success_rate_threshold,
-                                                    success_rates_pred,
-                                                    th.as_tensor(1, dtype=th.float).to(self.device)).to(self.device)
-                pred_is_success_indicate = th.where(success_rates_pred > cuda_success_rate_threshold,
-                                                    pred_is_success_indicate,
-                                                    th.as_tensor(0, dtype=th.float).to(self.device)).to(self.device)
-
-                estimate_right_rates.append((pred_is_success_indicate == is_successes_indicate)
-                                            .float().mean().detach().cpu().numpy().item())
-
-                self.policy.optimizer.zero_grad()
-                loss.backward()
-                th.nn.utils.clip_grad_norm_(self.policy.estimate_net.parameters(), self.max_grad_norm)
-                self.policy.optimizer.step()
-            if not continue_training:
-                break
-        self.logger.record("estimate/bce_loss", np.mean(estimate_losses))
-        self.logger.record("estimate/right_rate", np.mean(estimate_right_rates))
-
     def learn(
             self,
             total_timesteps: int,
@@ -494,7 +436,7 @@ class HybridPPO(HybridOnPolicyAlgorithm):
 
             self.clip_range_vf = get_schedule_fn(self.clip_range_vf)
 
-    def train(self, prefix=''):
+    def train(self, prefix=None):
         # Switch to train mode (this affects batch norm / dropout)
         self.policy.set_training_mode(True)
         # Update optimizer learning rate
@@ -580,22 +522,24 @@ class HybridPPO(HybridOnPolicyAlgorithm):
         explained_var = explained_variance(self.rollout_buffer.values.flatten(),
                                            self.rollout_buffer.returns.flatten())
         # Logs
-        self.logger.record(f"{prefix} train/entropy_loss", np.mean(entropy_losses))
-        self.logger.record(f"{prefix} train/policy_gradient_loss", np.mean(pg_losses))
-        self.logger.record(f"{prefix} train/value_loss", np.mean(value_losses))
-        self.logger.record(f"{prefix} train/approx_kl", np.mean(approx_kl_divs))
-        self.logger.record(f"{prefix} train/clip_fraction", np.mean(clip_fractions))
-        self.logger.record(f"{prefix} train/loss", loss.item())
-        self.logger.record(f"{prefix} train/explained_variance", explained_var)
-        if hasattr(self.policy, "log_std"):
-            self.logger.record(f"{prefix} train/std", th.exp(self.policy.log_std).mean().item())
-        self.logger.record(f"{prefix} train/n_updates", self._n_updates, exclude="tensorboard")
-        self.logger.record(f"{prefix} train/clip_range", clip_range)
-        if self.clip_range_vf is not None:
-            self.logger.record(f"{prefix} train/clip_range_vf", clip_range_vf)
+        prefix = f'{prefix}' if prefix is not None else ''
 
-    def train_estimate(self, prefix=''):
-        assert self.is_hybrid_policy
+        self.logger.record(f"{prefix}train/entropy_loss", np.mean(entropy_losses))
+        self.logger.record(f"{prefix}train/policy_gradient_loss", np.mean(pg_losses))
+        self.logger.record(f"{prefix}train/value_loss", np.mean(value_losses))
+        self.logger.record(f"{prefix}train/approx_kl", np.mean(approx_kl_divs))
+        self.logger.record(f"{prefix}train/clip_fraction", np.mean(clip_fractions))
+        self.logger.record(f"{prefix}train/loss", loss.item())
+        self.logger.record(f"{prefix}train/explained_variance", explained_var)
+        if hasattr(self.policy, "log_std"):
+            self.logger.record(f"{prefix}train/std", th.exp(self.policy.log_std).mean().item())
+        self.logger.record(f"{prefix}train/n_updates", self._n_updates, exclude="tensorboard")
+        self.logger.record(f"{prefix}train/clip_range", clip_range)
+        if self.clip_range_vf is not None:
+            self.logger.record(f"{prefix}train/clip_range_vf", clip_range_vf)
+
+    def train_estimate(self, prefix=None):
+        assert self.is_two_stage_env
 
         self.policy.set_training_mode(True)
         self._update_learning_rate(self.policy.optimizer)
@@ -648,8 +592,11 @@ class HybridPPO(HybridOnPolicyAlgorithm):
                 self.policy.optimizer.step()
             if not continue_training:
                 break
-        self.logger.record(f"{prefix} estimate/bce_loss", np.mean(estimate_losses))
-        self.logger.record(f"{prefix} estimate/right_rate", np.mean(estimate_right_rates))
+
+        prefix = f'{prefix}' if prefix is not None else ''
+
+        self.logger.record(f"{prefix}estimate/bce_loss", np.mean(estimate_losses))
+        self.logger.record(f"{prefix}estimate/right_rate", np.mean(estimate_right_rates))
 
     def learn_one_step(
             self,
@@ -668,7 +615,7 @@ class HybridPPO(HybridOnPolicyAlgorithm):
             accumulated_time_elapsed: float = 0.0,
             accumulated_iteration: int = 0,
             accumulated_total_timesteps: int = 0,
-            prefix: str = '',
+            prefix: str = None,
     ) -> "HybridPPO":
         total_timesteps, callback = self._setup_learn(
             total_timesteps, eval_env, callback, eval_freq, n_eval_episodes, eval_log_path, reset_num_timesteps,
@@ -676,6 +623,8 @@ class HybridPPO(HybridOnPolicyAlgorithm):
         )
 
         callback.on_training_start(locals(), globals())
+
+        prefix = f'{prefix} ' if prefix is not None else ''
 
         while self.num_timesteps < total_timesteps:
 
@@ -691,26 +640,26 @@ class HybridPPO(HybridOnPolicyAlgorithm):
             # Display training infos
             if log_interval is not None and accumulated_iteration % log_interval == 0:
                 fps = int(accumulated_total_timesteps + self.num_timesteps / (accumulated_time_elapsed + time.time() - self.start_time))
-                self.logger.record(f"{prefix} time/iterations", accumulated_iteration, exclude="tensorboard")
+                self.logger.record(f"{prefix}time/iterations", accumulated_iteration, exclude="tensorboard")
 
                 if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
-                    self.logger.record(f"{prefix} rollout/ep_rew_mean",
+                    self.logger.record(f"{prefix}rollout/ep_rew_mean",
                                        safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
-                    self.logger.record(f"{prefix} rollout/ep_len_mean",
+                    self.logger.record(f"{prefix}rollout/ep_len_mean",
                                        safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
                     if len(self.ep_success_buffer) > 0:
-                        self.logger.record(f"{prefix} rollout/success_rate", safe_mean(self.ep_success_buffer))
+                        self.logger.record(f"{prefix}rollout/success_rate", safe_mean(self.ep_success_buffer))
 
                     if self.is_two_stage_env:
                         if len(self.removal_success_buffer) > 0:
-                            self.logger.record(f"{prefix} rollout/stage_1 success_rate", safe_mean(self.removal_success_buffer))
+                            self.logger.record(f"{prefix}rollout/stage_1 success_rate", safe_mean(self.removal_success_buffer))
                         if len(self.global_success_buffer) > 0:
-                            self.logger.record(f"{prefix} rollout/stage_2 success_rate", safe_mean(self.global_success_buffer))
+                            self.logger.record(f"{prefix}rollout/stage_2 success_rate", safe_mean(self.global_success_buffer))
 
-                self.logger.record(f"{prefix} time/fps", fps)
-                self.logger.record(f"{prefix} time/time_elapsed", int(accumulated_time_elapsed + time.time() - self.start_time),
+                self.logger.record(f"{prefix}time/fps", fps)
+                self.logger.record(f"{prefix}time/time_elapsed", int(accumulated_time_elapsed + time.time() - self.start_time),
                                    exclude="tensorboard")
-                self.logger.record(f"{prefix} time/total_timesteps", accumulated_total_timesteps + self.num_timesteps, exclude="tensorboard")
+                self.logger.record(f"{prefix}time/total_timesteps", accumulated_total_timesteps + self.num_timesteps, exclude="tensorboard")
                 self.logger.dump(step=accumulated_total_timesteps + self.num_timesteps)
 
             # DIY
@@ -718,9 +667,9 @@ class HybridPPO(HybridOnPolicyAlgorithm):
                 assert save_path is not None
                 accumulated_save_count += 1
                 self.save(save_path + "_" + str(accumulated_save_count))
-                self.logger.record(f"{prefix} Save Model", accumulated_save_count)
-                self.logger.record(f"{prefix} time/iterations", accumulated_iteration)
-                self.logger.record(f"{prefix} time/total_timesteps", accumulated_total_timesteps + self.num_timesteps)
+                self.logger.record(f"{prefix}Save Model", accumulated_save_count)
+                self.logger.record(f"{prefix}time/iterations", accumulated_iteration)
+                self.logger.record(f"{prefix}time/total_timesteps", accumulated_total_timesteps + self.num_timesteps)
                 self.logger.dump(step=accumulated_total_timesteps + self.num_timesteps)
 
             self.train(prefix=prefix)
@@ -753,7 +702,7 @@ class HybridPPO(HybridOnPolicyAlgorithm):
             accumulated_time_elapsed: float = 0.0,
             accumulated_iteration: int = 0,
             accumulated_total_timesteps: int = 0,
-            prefix: str = '',
+            prefix: str = None,
     ) -> "HybridPPO":
         total_timesteps, callback = self._setup_learn(
             total_timesteps, eval_env, callback, eval_freq, n_eval_episodes, eval_log_path, reset_num_timesteps,
@@ -761,6 +710,8 @@ class HybridPPO(HybridOnPolicyAlgorithm):
         )
 
         callback.on_training_start(locals(), globals())
+
+        prefix = f'{prefix} ' if prefix is not None else ''
 
         while self.num_timesteps < total_timesteps:
 
@@ -775,26 +726,26 @@ class HybridPPO(HybridOnPolicyAlgorithm):
             # Display training infos
             if log_interval is not None and accumulated_iteration % log_interval == 0:
                 fps = int(accumulated_total_timesteps + self.num_timesteps / (accumulated_time_elapsed + time.time() - self.start_time))
-                self.logger.record(f"{prefix} time/iterations", accumulated_iteration, exclude="tensorboard")
+                self.logger.record(f"{prefix}time/iterations", accumulated_iteration, exclude="tensorboard")
 
                 if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
-                    self.logger.record(f"{prefix} rollout/ep_rew_mean",
+                    self.logger.record(f"{prefix}rollout/ep_rew_mean",
                                        safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
-                    self.logger.record(f"{prefix} rollout/ep_len_mean",
+                    self.logger.record(f"{prefix}rollout/ep_len_mean",
                                        safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
                     if len(self.ep_success_buffer) > 0:
-                        self.logger.record(f"{prefix} rollout/success_rate", safe_mean(self.ep_success_buffer))
+                        self.logger.record(f"{prefix}rollout/success_rate", safe_mean(self.ep_success_buffer))
 
                     if self.is_two_stage_env:
                         if len(self.removal_success_buffer) > 0:
-                            self.logger.record(f"{prefix} rollout/stage_1 success_rate", safe_mean(self.removal_success_buffer))
+                            self.logger.record(f"{prefix}rollout/stage_1 success_rate", safe_mean(self.removal_success_buffer))
                         if len(self.global_success_buffer) > 0:
-                            self.logger.record(f"{prefix} rollout/stage_2 success_rate", safe_mean(self.global_success_buffer))
+                            self.logger.record(f"{prefix}rollout/stage_2 success_rate", safe_mean(self.global_success_buffer))
 
-                self.logger.record(f"{prefix} time/fps", fps)
-                self.logger.record(f"{prefix} time/time_elapsed", int(accumulated_time_elapsed + time.time() - self.start_time),
+                self.logger.record(f"{prefix}time/fps", fps)
+                self.logger.record(f"{prefix}time/time_elapsed", int(accumulated_time_elapsed + time.time() - self.start_time),
                                    exclude="tensorboard")
-                self.logger.record(f"{prefix} time/total_timesteps", accumulated_total_timesteps + self.num_timesteps, exclude="tensorboard")
+                self.logger.record(f"{prefix}time/total_timesteps", accumulated_total_timesteps + self.num_timesteps, exclude="tensorboard")
                 self.logger.dump(step=accumulated_total_timesteps + self.num_timesteps)
 
             # DIY
@@ -802,9 +753,9 @@ class HybridPPO(HybridOnPolicyAlgorithm):
                 assert save_path is not None
                 accumulated_save_count += 1
                 self.save(save_path + "_" + str(accumulated_save_count))
-                self.logger.record(f"{prefix} Save Model", accumulated_save_count)
-                self.logger.record(f"{prefix} time/iterations", accumulated_iteration)
-                self.logger.record(f"{prefix} time/total_timesteps", accumulated_total_timesteps + self.num_timesteps)
+                self.logger.record(f"{prefix}Save Model", accumulated_save_count)
+                self.logger.record(f"{prefix}time/iterations", accumulated_iteration)
+                self.logger.record(f"{prefix}time/total_timesteps", accumulated_total_timesteps + self.num_timesteps)
                 self.logger.dump(step=accumulated_total_timesteps + self.num_timesteps)
 
             self.train_estimate(prefix=prefix)
@@ -831,10 +782,11 @@ class HybridPPO(HybridOnPolicyAlgorithm):
                 self.ep_info_buffer.extend([maybe_ep_info])
             if maybe_is_success is not None and dones[idx]:
                 self.ep_success_buffer.append(maybe_is_success)
-            if maybe_removal_done:
+            if maybe_removal_success is not None and maybe_removal_done:
                 self.removal_success_buffer.append(maybe_removal_success)
-            if maybe_global_done:
+            if maybe_global_success is not None and maybe_global_done:
                 self.global_success_buffer.append(maybe_global_success)
+
 
 import gym
 from stable_baselines3.common.monitor import Monitor
