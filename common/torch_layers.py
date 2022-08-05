@@ -358,55 +358,6 @@ class HybridNatureCNN(BaseFeaturesExtractor):
         hidden = th.cat([cube_hidden, physical_hidden], -1)
         return hidden
 
-# DIY
-class AttnExtractor(BaseFeaturesExtractor):
-    """
-    Hybrid feature extractor for Dict observation spaces.
-    Add CNN feature extract based on Combined feature extractor.
-    The output features are concatenated and fed through additional MLP network.
-
-    :param observation_space:
-    :param cnn_output_dim: Number of features to output from CNN module, Defaults to 64.
-    """
-
-    def __init__(self, observation_space: gym.spaces.Dict,
-                 object_feature_size: int = None,
-                 embedding_dim: int = 64,
-                 attn_output_dim: int = 128,
-                 ):
-        # TODO we do not know features-dim here before going over all the items, so put something there. This is dirty!
-        assert object_feature_size is not None
-        super(AttnExtractor, self).__init__(observation_space, features_dim=1)
-
-        total_observation_size = 0
-        for _, subspace in observation_space.spaces.items():
-            total_observation_size += get_flattened_obs_dim(subspace)
-
-        extractor = TransformerExtractor(
-            self_dim=total_observation_size - object_feature_size,
-            object_dim=object_feature_size,
-            emb=embedding_dim,
-            output_dim=attn_output_dim
-        )
-
-        total_feature_size = attn_output_dim
-
-        self.object_feature_size = object_feature_size
-        self.extractor = extractor
-        # Update the features dim manually
-        self._features_dim = total_feature_size
-
-    def forward(self, observations: TensorDict) -> th.Tensor:
-        obs_i_list = []
-        obs_o_list = []
-        for key, obs in observations.items():
-            if key == 'observation':
-                obs_i_list.append(obs[:, :-self.object_feature_size])
-                obs_o_list.append(obs[:, -self.object_feature_size:])
-            else:
-                obs_i_list.append(obs)
-
-        return self.extractor(th.cat(obs_i_list, dim=1), th.cat(obs_o_list, dim=1))
 
 # DIY
 class NaiveExtractor(BaseFeaturesExtractor):

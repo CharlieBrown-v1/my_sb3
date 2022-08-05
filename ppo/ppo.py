@@ -8,7 +8,7 @@ from gym import spaces
 from torch.nn import functional as F
 
 from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm, HybridOnPolicyAlgorithm
-from stable_baselines3.common.policies import ActorCriticPolicy, HybridPolicy, AttnPolicy, NaivePolicy
+from stable_baselines3.common.policies import ActorCriticPolicy, HybridPolicy, NaivePolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import explained_variance, get_schedule_fn
 
@@ -67,7 +67,7 @@ class PPO(OnPolicyAlgorithm):
 
     def __init__(
             self,
-            policy: Union[str, Union[Type[ActorCriticPolicy], Type[HybridPolicy], Type[AttnPolicy], Type[NaivePolicy]]],
+            policy: Union[str, Union[Type[ActorCriticPolicy], Type[HybridPolicy], Type[NaivePolicy]]],
             env: Union[GymEnv, str],
             learning_rate: Union[float, Schedule] = 3e-4,
             n_steps: int = 2048,
@@ -329,7 +329,7 @@ from collections import deque
 class HybridPPO(HybridOnPolicyAlgorithm):
     def __init__(
             self,
-            policy: Union[str, Union[Type[ActorCriticPolicy], Type[HybridPolicy], Type[AttnPolicy], Type[NaivePolicy]]],
+            policy: Union[str, Union[Type[ActorCriticPolicy], Type[HybridPolicy], Type[NaivePolicy]]],
             env: Union[GymEnv, str],
             learning_rate: Union[float, Schedule] = 3e-4,
             n_steps: int = 2048,
@@ -833,9 +833,9 @@ class HrlPPO:
     def __init__(
             self,
 
-            lower_policy: Union[str, Union[Type[ActorCriticPolicy], Type[HybridPolicy], Type[AttnPolicy], Type[NaivePolicy]]],
-            estimate_policy: Union[str, Union[Type[ActorCriticPolicy], Type[HybridPolicy], Type[AttnPolicy], Type[NaivePolicy]]],
-            upper_policy: Union[str, Union[Type[ActorCriticPolicy], Type[HybridPolicy], Type[AttnPolicy], Type[NaivePolicy]]],
+            lower_policy: Union[str, Union[Type[ActorCriticPolicy], Type[HybridPolicy], Type[NaivePolicy]]],
+            estimate_policy: Union[str, Union[Type[ActorCriticPolicy], Type[HybridPolicy], Type[NaivePolicy]]],
+            upper_policy: Union[str, Union[Type[ActorCriticPolicy], Type[HybridPolicy], Type[NaivePolicy]]],
 
             lower_env: Union[GymEnv, str],
             estimate_env: Union[GymEnv, str],

@@ -8,7 +8,7 @@ import torch as th
 from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.buffers import DictRolloutBuffer, RolloutBuffer, HybridDictRolloutBuffer
 from stable_baselines3.common.callbacks import BaseCallback
-from stable_baselines3.common.policies import ActorCriticPolicy, BasePolicy, HybridPolicy, AttnPolicy, NaivePolicy
+from stable_baselines3.common.policies import ActorCriticPolicy, BasePolicy, HybridPolicy, NaivePolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import obs_as_tensor, safe_mean
 from stable_baselines3.common.vec_env import VecEnv
@@ -293,7 +293,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
 class HybridOnPolicyAlgorithm(OnPolicyAlgorithm):
     def __init__(
             self,
-            policy: Union[str, Type[ActorCriticPolicy]],
+            policy: Union[str, Type[ActorCriticPolicy], Type[HybridPolicy], Type[NaivePolicy]],
             env: Union[GymEnv, str],
             learning_rate: Union[float, Schedule],
             n_steps: int,
