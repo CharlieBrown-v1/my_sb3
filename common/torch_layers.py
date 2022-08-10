@@ -235,6 +235,124 @@ class MlpExtractor(nn.Module):
         return self.value_net(self.shared_net(features))
 
 
+class TransformerMlpExtractor(nn.Module):
+    def __init__(self,
+                 feature_dim: int,
+                 net_arch: List[Union[int, Dict[str, List[int]]]],
+                 activation_fn: Type[nn.Module],
+                 device: Union[th.device, str] = "auto",
+                 dropout_probability=0.0,
+                 ):
+        super(TransformerMlpExtractor, self).__init__()
+        device = get_device(device)
+        policy_embedding_layer = []
+        value_embedding_layer = []
+        policy_linear_layer, value_linear_layer = [], []
+        policy_norm_layer, value_norm_layer = [], []
+        policy_activation_layer, value_activation_layer = [], []
+        policy_only_layers = []  # Layer sizes of the network that only belongs to the policy network
+        value_only_layers = []  # Layer sizes of the network that only belongs to the value network
+        last_layer_dim_shared = feature_dim
+
+        for layer in net_arch:
+            if isinstance(layer, int):
+                raise NotImplementedError
+            else:
+                assert isinstance(layer, dict), "Error: the net_arch list can only contain ints and dicts"
+                if "pi" in layer:
+                    assert isinstance(layer["pi"], list), "Error: net_arch[-1]['pi'] must contain a list of integers."
+                    policy_only_layers = layer["pi"]
+
+                if "vf" in layer:
+                    assert isinstance(layer["vf"], list), "Error: net_arch[-1]['vf'] must contain a list of integers."
+                    value_only_layers = layer["vf"]
+                break  # From here on the network splits up in policy and value network
+
+        last_layer_dim_pi = feature_dim
+        last_layer_dim_vf = feature_dim
+
+        # Build the non-shared part of the network
+        for pi_layer_size, vf_layer_size in zip_longest(policy_only_layers, value_only_layers):
+            if pi_layer_size is not None:
+                assert isinstance(pi_layer_size, int), "Error: net_arch[-1]['pi'] must only contain integers."
+                policy_linear_layer.append(nn.Linear(pi_layer_size, pi_layer_size).to(device))
+                policy_norm_layer.append(nn.LayerNorm(pi_layer_size).to(device))
+                policy_activation_layer.append(activation_fn())
+                last_layer_dim_pi = pi_layer_size
+
+            if vf_layer_size is not None:
+                assert isinstance(vf_layer_size, int), "Error: net_arch[-1]['vf'] must only contain integers."
+                value_linear_layer.append(nn.Linear(vf_layer_size, vf_layer_size).to(device))
+                value_norm_layer.append(nn.LayerNorm(vf_layer_size).to(device))
+                value_activation_layer.append(activation_fn())
+                last_layer_dim_vf = vf_layer_size
+
+        assert len(policy_linear_layer) != 0 and len(value_linear_layer) != 0
+
+        policy_embedding_layer.append(nn.Linear(feature_dim, policy_linear_layer[0].in_features))
+        value_embedding_layer.append(nn.Linear(feature_dim, value_linear_layer[0].in_features))
+
+        # Save dim, used to create the distributions
+        self.latent_dim_pi = last_layer_dim_pi
+        self.latent_dim_vf = last_layer_dim_vf
+        self.device = device
+
+        # Create networks
+        # If the list of layers is empty, the network will just act as an Identity module
+        self.dropout = nn.Dropout(dropout_probability)
+
+        self.policy_embedding_layer = nn.Sequential(*policy_embedding_layer).to(device)
+        assert len(policy_linear_layer) == len(policy_norm_layer) and len(policy_linear_layer) == len(policy_activation_layer)
+        self.policy_linear_layer = policy_linear_layer.copy()
+        self.policy_norm_layer = policy_norm_layer.copy()
+        self.policy_activation_layer = policy_activation_layer.copy()
+
+        self.value_embedding_layer = nn.Sequential(*value_embedding_layer).to(device)
+        assert len(value_linear_layer) == len(value_norm_layer) and len(value_linear_layer) == len(value_activation_layer)
+        self.value_linear_layer = value_linear_layer.copy()
+        self.value_norm_layer = value_norm_layer.copy()
+        self.value_activation_layer = value_activation_layer.copy()
+
+    def forward(self, features: th.Tensor) -> Tuple[th.Tensor, th.Tensor]:
+        return self.forward_actor(features), self.forward_critic(features)
+
+    def forward_actor_one_layer(self, index: int, features: th.Tensor) -> th.Tensor:
+        linear_features = self.policy_linear_layer[index](features)
+        features = self.policy_activation_layer[index](linear_features) + features
+        features = self.policy_norm_layer[index](features)
+        features = self.dropout(features)
+        return features
+
+    def forward_critic_one_layer(self, index: int, features: th.Tensor) -> th.Tensor:
+        linear_features = self.value_linear_layer[index](features)
+        features = self.value_activation_layer[index](linear_features) + features
+        features = self.value_norm_layer[index](features)
+        features = self.dropout(features)
+        return features
+
+    def forward_actor(self, features: th.Tensor) -> th.Tensor:
+        latent = self.policy_embedding_layer(features)
+        for i in range(len(self.policy_linear_layer)):
+            latent = self.forward_actor_one_layer(i, latent)
+        return latent
+
+    def forward_critic(self, features: th.Tensor) -> th.Tensor:
+        latent = self.value_embedding_layer(features)
+        for i in range(len(self.value_linear_layer)):
+            latent = self.forward_critic_one_layer(i, latent)
+        return latent
+
+    def update_device(self, device):
+        self.device = device
+        for i in range(len(self.policy_linear_layer)):
+            self.policy_linear_layer[i].to(device)
+            self.policy_norm_layer[i].to(device)
+
+        for i in range(len(self.value_linear_layer)):
+            self.value_linear_layer[i].to(device)
+            self.value_norm_layer[i].to(device)
+
+
 class CombinedExtractor(BaseFeaturesExtractor):
     """
     Combined feature extractor for Dict observation spaces.
@@ -274,6 +392,7 @@ class CombinedExtractor(BaseFeaturesExtractor):
             encoded_tensor_list.append(extractor(observations[key]))
         return th.cat(encoded_tensor_list, dim=1)
 
+
 # DIY
 class HybridExtractor(BaseFeaturesExtractor):
     """
@@ -311,6 +430,7 @@ class HybridExtractor(BaseFeaturesExtractor):
         for key, extractor in self.extractors.items():
             encoded_tensor_list.append(extractor(observations[key]))
         return th.cat(encoded_tensor_list, dim=1)
+
 
 # DIY
 class HybridNatureCNN(BaseFeaturesExtractor):
@@ -421,132 +541,3 @@ def get_actor_critic_arch(net_arch: Union[List[int], Dict[str, List[int]]]) -> T
         assert "qf" in net_arch, "Error: no key 'qf' was provided in net_arch for the critic network"
         actor_arch, critic_arch = net_arch["pi"], net_arch["qf"]
     return actor_arch, critic_arch
-
-
-import torch.nn as nn
-import torch.nn.functional as F
-import torch
-import numpy as np
-
-
-class SelfAttention(nn.Module):
-    def __init__(self, emb, heads=8):
-        super(SelfAttention, self).__init__()
-        self.emb = emb
-        self.heads = heads
-
-        self.tokeys = nn.Linear(emb, emb * heads, bias=False)
-        self.toqueries = nn.Linear(emb, emb * heads, bias=False)
-        self.tovalues = nn.Linear(emb, emb * heads, bias=False)
-
-        self.unifyheads = nn.Linear(heads * emb, emb)
-
-    def forward(self, x):
-        b, t, e = x.size()
-        h = self.heads
-        keys = self.tokeys(x).reshape(b, t, h, e).contiguous()
-        queries = self.toqueries(x).reshape(b, t, h, e).contiguous()
-        values = self.tovalues(x).reshape(b, t, h, e).contiguous()
-
-        # compute scaled dot-product self-attention
-
-        # - fold heads into the batch dimension
-        keys = keys.transpose(1, 2).contiguous().view(b * h, t, e)
-        queries = queries.transpose(1, 2).contiguous().view(b * h, t, e)
-        values = values.transpose(1, 2).contiguous().view(b * h, t, e)
-
-        queries = queries / (e ** (1 / 4))
-        keys = keys / (e ** (1 / 4))
-        # - Instead of dividing the dot products by sqrt(e), we scale the keys and values.
-        #   This should be more memory efficient
-
-        # - get dot product of queries and keys, and scale
-        dot = torch.bmm(queries, keys.transpose(1, 2))
-
-        assert dot.size() == (b * h, t, t)
-
-        dot = F.softmax(dot, dim=2)
-        # - dot now has row-wise self-attention probabilities
-
-        # apply the self attention to the values
-        out = torch.bmm(dot, values).view(b, h, t, e)
-
-        # swap h, t back, unify heads
-        out = out.transpose(1, 2).contiguous().view(b, t, h * e)
-
-        y = self.unifyheads(out)
-
-        return y
-
-class TransformerBlock(nn.Module):
-    def __init__(self, emb, heads, ff_hidden_mult=4, dropout=0.0):
-        super(TransformerBlock, self).__init__()
-
-        self.attention = SelfAttention(emb, heads=heads)
-
-        self.norm1 = nn.LayerNorm(emb)
-        self.norm2 = nn.LayerNorm(emb)
-
-        self.ff = nn.Sequential(
-            nn.Linear(emb, ff_hidden_mult * emb),
-            nn.ReLU(),
-            nn.Linear(ff_hidden_mult * emb, emb)
-        )
-
-        self.do = nn.Dropout(dropout)
-
-    def forward(self, x):
-        attended = self.attention(x)
-
-        x = self.norm1(attended + x)
-
-        x = self.do(x)
-
-        feedforward = self.ff(x)
-
-        x = self.norm2(feedforward + x)
-
-        y = self.do(x)
-
-        return y
-
-class TransformerExtractor(nn.Module):
-    def __init__(self, self_dim, object_dim, max_horizon_count=8, emb=64, output_dim=64, heads=1, depth=1):
-        super(TransformerExtractor, self).__init__()
-
-        self.max_horizon_count = max_horizon_count
-        assert object_dim % max_horizon_count == 0
-        self.emb_dim = emb
-        self.num_tokens = output_dim
-
-        self.my_encoder = nn.Linear(self_dim, emb)
-        self.obj_encoder = nn.Linear(object_dim // max_horizon_count, emb)
-
-        self.output = nn.Linear(emb, output_dim)
-
-        tblocks = []
-        for _ in range(depth):
-            tblocks.append(
-                TransformerBlock(emb=emb, heads=heads))
-        self.tblocks = nn.Sequential(*tblocks)
-
-    def forward(self, obs_i, obs_o):  ### bs * (n * o) / bs * (n_1 + n_2 + n_3)
-        my_token = self.my_encoder(obs_i)[:, None, :]
-
-        bs = obs_o.shape[0]
-        n = self.max_horizon_count
-        o = int(np.array(obs_o.shape).prod() / (bs * n))
-
-        obs_o = obs_o.reshape(bs, n, o).reshape(bs * n, -1)
-        obj_token = self.obj_encoder(obs_o).reshape(bs, n, self.emb_dim)
-
-        tokens = torch.cat([my_token, obj_token], dim=1)
-
-        bs, t, e = tokens.size()
-
-        x = self.tblocks(tokens)
-
-        x = self.output(x.view(bs * t, e)).view(bs, t, self.num_tokens)
-        y = x[:, 0, :]  #.mean(dim=1)
-
-        return y

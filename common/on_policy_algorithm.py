@@ -333,6 +333,9 @@ class HybridOnPolicyAlgorithm(OnPolicyAlgorithm):
         )
         self.policy = self.policy.to(self.device)
 
+        if self.policy.use_transformer_mlp:
+            self.policy.mlp_extractor.update_device(self.device)
+
         if self.is_two_stage_env:
             buffer_cls = HybridDictRolloutBuffer
         else:

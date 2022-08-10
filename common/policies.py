@@ -31,6 +31,7 @@ from stable_baselines3.common.torch_layers import (
     NaiveExtractor,
     FlattenExtractor,
     MlpExtractor,
+    TransformerMlpExtractor,
     NatureCNN,
     create_mlp,
 )
@@ -882,7 +883,11 @@ class HybridPolicy(ActorCriticPolicy):
             normalize_images: bool = True,
             optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
             optimizer_kwargs: Optional[Dict[str, Any]] = None,
+
+            use_transformer_mlp: bool = False,
     ):
+        self.use_transformer_mlp = use_transformer_mlp
+
         super(HybridPolicy, self).__init__(
             observation_space,
             action_space,
@@ -902,6 +907,23 @@ class HybridPolicy(ActorCriticPolicy):
             optimizer_class,
             optimizer_kwargs,
         )
+
+    def _build_mlp_extractor(self) -> None:
+        if self.use_transformer_mlp:
+            self.mlp_extractor = TransformerMlpExtractor(
+                self.features_dim,
+                net_arch=self.net_arch,
+                activation_fn=self.activation_fn,
+                device=self.device,
+                dropout_probability=0,
+            )
+        else:
+            self.mlp_extractor = MlpExtractor(
+                self.features_dim,
+                net_arch=self.net_arch,
+                activation_fn=self.activation_fn,
+                device=self.device,
+            )
 
     def _build(self, lr_schedule: Schedule) -> None:
         super(HybridPolicy, self)._build(lr_schedule)
@@ -931,6 +953,7 @@ class HybridPolicy(ActorCriticPolicy):
         success_probability = self.estimate_net(latent_vf).flatten().item()
 
         return success_probability
+
 
 # DIY
 class NaivePolicy(HybridPolicy):
@@ -986,6 +1009,8 @@ class NaivePolicy(HybridPolicy):
             normalize_images: bool = True,
             optimizer_class: Type[th.optim.Optimizer] = th.optim.Adam,
             optimizer_kwargs: Optional[Dict[str, Any]] = None,
+
+            use_transformer_mlp: bool = False,
     ):
         super(NaivePolicy, self).__init__(
             observation_space,
@@ -1005,6 +1030,7 @@ class NaivePolicy(HybridPolicy):
             normalize_images,
             optimizer_class,
             optimizer_kwargs,
+            use_transformer_mlp,
         )
 
 
