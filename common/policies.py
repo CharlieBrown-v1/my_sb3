@@ -908,6 +908,9 @@ class HybridPolicy(ActorCriticPolicy):
             optimizer_kwargs,
         )
 
+        if self.use_transformer_mlp:
+            self.policy.mlp_extractor.update_device(self.device)
+
     def _build_mlp_extractor(self) -> None:
         if self.use_transformer_mlp:
             self.mlp_extractor = TransformerMlpExtractor(

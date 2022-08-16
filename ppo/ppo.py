@@ -573,7 +573,6 @@ class HybridPPO(HybridOnPolicyAlgorithm):
                     loss_remain_times += 1
                 estimate_losses.append(loss_item)
 
-
                 is_successes_indicate = rollout_data.is_successes.long()
                 cuda_success_rate_threshold = th.as_tensor(self.success_rate_threshold).to(self.device)
                 pred_is_success_indicate = th.where(success_rates_pred <= cuda_success_rate_threshold,
@@ -639,7 +638,8 @@ class HybridPPO(HybridOnPolicyAlgorithm):
 
             # Display training infos
             if log_interval is not None and accumulated_iteration % log_interval == 0:
-                fps = int(accumulated_total_timesteps + self.num_timesteps / (accumulated_time_elapsed + time.time() - self.start_time))
+                fps = int(accumulated_total_timesteps + self.num_timesteps / (
+                            accumulated_time_elapsed + time.time() - self.start_time))
                 self.logger.record(f"{prefix}time/iterations", accumulated_iteration, exclude="tensorboard")
 
                 if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
@@ -652,14 +652,18 @@ class HybridPPO(HybridOnPolicyAlgorithm):
 
                     if self.is_two_stage_env:
                         if len(self.removal_success_buffer) > 0:
-                            self.logger.record(f"{prefix}rollout/stage_1 success_rate", safe_mean(self.removal_success_buffer))
+                            self.logger.record(f"{prefix}rollout/stage_1 success_rate",
+                                               safe_mean(self.removal_success_buffer))
                         if len(self.global_success_buffer) > 0:
-                            self.logger.record(f"{prefix}rollout/stage_2 success_rate", safe_mean(self.global_success_buffer))
+                            self.logger.record(f"{prefix}rollout/stage_2 success_rate",
+                                               safe_mean(self.global_success_buffer))
 
                 self.logger.record(f"{prefix}time/fps", fps)
-                self.logger.record(f"{prefix}time/time_elapsed", int(accumulated_time_elapsed + time.time() - self.start_time),
+                self.logger.record(f"{prefix}time/time_elapsed",
+                                   int(accumulated_time_elapsed + time.time() - self.start_time),
                                    exclude="tensorboard")
-                self.logger.record(f"{prefix}time/total_timesteps", accumulated_total_timesteps + self.num_timesteps, exclude="tensorboard")
+                self.logger.record(f"{prefix}time/total_timesteps", accumulated_total_timesteps + self.num_timesteps,
+                                   exclude="tensorboard")
                 self.logger.dump(step=accumulated_total_timesteps + self.num_timesteps)
 
             # DIY
@@ -678,7 +682,8 @@ class HybridPPO(HybridOnPolicyAlgorithm):
 
         return self
 
-    def setup_learn(self, total_timesteps, eval_env, callback, eval_freq, n_eval_episodes, eval_log_path, reset_num_timesteps, tb_log_name):
+    def setup_learn(self, total_timesteps, eval_env, callback, eval_freq, n_eval_episodes, eval_log_path,
+                    reset_num_timesteps, tb_log_name):
         total_timesteps, callback = self._setup_learn(
             total_timesteps, eval_env, callback, eval_freq, n_eval_episodes, eval_log_path, reset_num_timesteps,
             tb_log_name
@@ -715,7 +720,8 @@ class HybridPPO(HybridOnPolicyAlgorithm):
 
         while self.num_timesteps < total_timesteps:
 
-            continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, n_rollout_steps=self.n_steps)
+            continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer,
+                                                      n_rollout_steps=self.n_steps)
 
             if continue_training is False:
                 break
@@ -725,7 +731,8 @@ class HybridPPO(HybridOnPolicyAlgorithm):
 
             # Display training infos
             if log_interval is not None and accumulated_iteration % log_interval == 0:
-                fps = int(accumulated_total_timesteps + self.num_timesteps / (accumulated_time_elapsed + time.time() - self.start_time))
+                fps = int(accumulated_total_timesteps + self.num_timesteps / (
+                            accumulated_time_elapsed + time.time() - self.start_time))
                 self.logger.record(f"{prefix}time/iterations", accumulated_iteration, exclude="tensorboard")
 
                 if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
@@ -738,14 +745,18 @@ class HybridPPO(HybridOnPolicyAlgorithm):
 
                     if self.is_two_stage_env:
                         if len(self.removal_success_buffer) > 0:
-                            self.logger.record(f"{prefix}rollout/stage_1 success_rate", safe_mean(self.removal_success_buffer))
+                            self.logger.record(f"{prefix}rollout/stage_1 success_rate",
+                                               safe_mean(self.removal_success_buffer))
                         if len(self.global_success_buffer) > 0:
-                            self.logger.record(f"{prefix}rollout/stage_2 success_rate", safe_mean(self.global_success_buffer))
+                            self.logger.record(f"{prefix}rollout/stage_2 success_rate",
+                                               safe_mean(self.global_success_buffer))
 
                 self.logger.record(f"{prefix}time/fps", fps)
-                self.logger.record(f"{prefix}time/time_elapsed", int(accumulated_time_elapsed + time.time() - self.start_time),
+                self.logger.record(f"{prefix}time/time_elapsed",
+                                   int(accumulated_time_elapsed + time.time() - self.start_time),
                                    exclude="tensorboard")
-                self.logger.record(f"{prefix}time/total_timesteps", accumulated_total_timesteps + self.num_timesteps, exclude="tensorboard")
+                self.logger.record(f"{prefix}time/total_timesteps", accumulated_total_timesteps + self.num_timesteps,
+                                   exclude="tensorboard")
                 self.logger.dump(step=accumulated_total_timesteps + self.num_timesteps)
 
             # DIY
@@ -793,7 +804,6 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env.subproc_vec_env import SubprocVecEnv
 from stable_baselines3.common.vec_env.dummy_vec_env import DummyVecEnv
 from stable_baselines3.common.vec_env.vec_normalize import VecNormalize
-
 
 lower = 0
 upper = 1
@@ -895,13 +905,15 @@ class HrlPPO:
 
     def load_estimate(self, lower_model_path: str = None, logger=None):
         assert lower_model_path is not None and logger is not None, 'Model path and logger can not be None!!!'
-        self.estimate_agent = HybridPPO.load(lower_model_path, env=self.wrapped_estimate_env, tensorboard_log=self.tensorboard_log)
+        self.estimate_agent = HybridPPO.load(lower_model_path, env=self.wrapped_estimate_env,
+                                             tensorboard_log=self.tensorboard_log)
         self.estimate_agent.set_logger(logger)
 
     def load_upper(self, lower_model_path: str = None, logger=None):
         assert lower_model_path is not None and logger is not None, 'Model path and logger can not be None!!!'
         wrapped_upper_env = env_wrapper(self.upper_env_id, self.upper_env_num, lower_model_path)
-        self.upper_agent = HybridPPO(self.upper_policy, wrapped_upper_env, self.lr, self.upper_n_steps, verbose=1, tensorboard_log=self.tensorboard_log)
+        self.upper_agent = HybridPPO(self.upper_policy, wrapped_upper_env, self.lr, self.upper_n_steps, verbose=1,
+                                     tensorboard_log=self.tensorboard_log)
         self.upper_agent.set_logger(logger)
 
     def learn(
@@ -925,6 +937,9 @@ class HrlPPO:
             train_lower_iteration: int = 100,
             train_estimate_iteration: int = 50,
             train_upper_iteration: int = 3000,
+            train_lower_model_path: str = None,
+            train_estimate_model_path: str = None,
+            train_upper_model_path: str = None,
     ):
         lower_save_count = save_count
         lower_iteration = 0
@@ -957,12 +972,13 @@ class HrlPPO:
         estimate_single_steps = self.estimate_agent.rollout_buffer.n_envs * self.estimate_agent.rollout_buffer.buffer_size
         estimate_total_steps = estimate_single_steps * total_iteration_count
         estimate_total_steps, estimate_callback = self.estimate_agent.setup_learn(total_timesteps=estimate_total_steps,
-                                                                         callback=callback,
-                                                                         eval_env=eval_env, eval_freq=eval_freq,
-                                                                         n_eval_episodes=n_eval_episodes,
-                                                                         eval_log_path=eval_log_path,
-                                                                         reset_num_timesteps=reset_num_timesteps,
-                                                                         tb_log_name=f'Estimate')
+                                                                                  callback=callback,
+                                                                                  eval_env=eval_env,
+                                                                                  eval_freq=eval_freq,
+                                                                                  n_eval_episodes=n_eval_episodes,
+                                                                                  eval_log_path=eval_log_path,
+                                                                                  reset_num_timesteps=reset_num_timesteps,
+                                                                                  tb_log_name=f'Estimate')
 
         upper_single_steps = self.upper_agent.rollout_buffer.n_envs * self.upper_agent.rollout_buffer.buffer_size
         upper_total_steps = upper_single_steps * total_iteration_count
@@ -974,64 +990,95 @@ class HrlPPO:
                                                                          reset_num_timesteps=reset_num_timesteps,
                                                                          tb_log_name=f'Upper')
 
-        estimate_callback.on_training_start(locals(), globals())
         lower_callback.on_training_start(locals(), globals())
+        estimate_callback.on_training_start(locals(), globals())
         upper_callback.on_training_start(locals(), globals())
+
+        # judge whether model_path provided or not
+        is_lower_model_provided = train_lower_iteration == 0
+        is_estimate_model_provided = train_estimate_iteration == 0
+        is_upper_model_provided = train_upper_iteration == 0
+
+        if is_lower_model_provided:
+            assert train_lower_model_path is not None
+            self.load_agent('lower', train_lower_model_path)
+        if is_estimate_model_provided:
+            assert train_estimate_model_path is not None
+            self.load_agent('estimate', train_estimate_model_path)
+        if is_upper_model_provided:
+            assert train_upper_model_path is not None
+            self.load_agent('upper', train_upper_model_path)
 
         for iteration in range(total_iteration_count):
             print(f'Round {iteration + 1} training starts!')
 
-            self.lower_agent.set_logger(self.lower_agent.logger)
-            self.lower_agent.learn_one_step(train_lower_iteration * lower_single_steps,
-                                            lower_callback, log_interval, eval_env, eval_freq, n_eval_episodes, f'Lower', eval_log_path, reset_num_timesteps, lower_save_interval, lower_save_path,
-                                            accumulated_save_count=lower_save_count,
-                                            accumulated_time_elapsed=lower_time_elapsed,
-                                            accumulated_iteration=lower_iteration,
-                                            accumulated_total_timesteps=lower_total_timesteps,
-                                            prefix='Lower')
-            lower_save_count += train_lower_iteration // lower_save_interval
-            lower_iteration += train_lower_iteration
-            lower_time_elapsed += time.time() - self.lower_agent.start_time
-            lower_total_steps += self.lower_agent.num_timesteps
+            if not is_lower_model_provided:
+                self.lower_agent.set_logger(self.lower_agent.logger)
+                self.lower_agent.learn_one_step(train_lower_iteration * lower_single_steps,
+                                                lower_callback, log_interval, eval_env, eval_freq, n_eval_episodes,
+                                                f'Lower', eval_log_path, reset_num_timesteps, lower_save_interval,
+                                                lower_save_path,
+                                                accumulated_save_count=lower_save_count,
+                                                accumulated_time_elapsed=lower_time_elapsed,
+                                                accumulated_iteration=lower_iteration,
+                                                accumulated_total_timesteps=lower_total_timesteps,
+                                                prefix='Lower')
+                lower_save_count += train_lower_iteration // lower_save_interval
+                lower_iteration += train_lower_iteration
+                lower_time_elapsed += time.time() - self.lower_agent.start_time
+                lower_total_steps += self.lower_agent.num_timesteps
 
-            latest_lower_model_path = f'{lower_save_path}_{lower_save_count}'
-            self.load_estimate(latest_lower_model_path, self.estimate_agent.logger)
-            assert self.estimate_agent is not None
-            estimate_single_steps = self.estimate_agent.rollout_buffer.n_envs * self.estimate_agent.rollout_buffer.buffer_size
-            self.estimate_agent.learn_estimate(train_estimate_iteration * estimate_single_steps,
-                                               estimate_callback, log_interval, eval_env, eval_freq, n_eval_episodes, f'Estimate', eval_log_path, reset_num_timesteps, estimate_save_interval, estimate_save_path,
-                                               accumulated_save_count=estimate_save_count,
-                                               accumulated_time_elapsed=estimate_time_elapsed,
-                                               accumulated_iteration=estimate_iteration,
-                                               accumulated_total_timesteps=estimate_total_timesteps,
-                                               prefix='Estimate')
-            estimate_save_count += train_estimate_iteration // estimate_save_interval
-            estimate_iteration += train_estimate_iteration
-            estimate_time_elapsed += time.time() - self.estimate_agent.start_time
-            estimate_total_timesteps += self.estimate_agent.num_timesteps
+                latest_lower_model_path = f'{lower_save_path}_{lower_save_count}'
+            else:
+                latest_lower_model_path = train_lower_model_path
 
-            latest_estimate_model_path = f'{estimate_save_path}_{estimate_save_count}'
-            self.load_upper(latest_estimate_model_path, self.upper_agent.logger)
-            assert self.upper_agent is not None
-            upper_single_steps = self.upper_agent.rollout_buffer.n_envs * self.upper_agent.rollout_buffer.buffer_size
-            self.upper_agent.learn_one_step(train_upper_iteration * upper_single_steps,
-                                            callback, log_interval, eval_env, eval_freq, n_eval_episodes, f'Upper', eval_log_path, reset_num_timesteps, upper_save_interval, upper_save_path,
-                                            accumulated_save_count=upper_save_count,
-                                            accumulated_time_elapsed=upper_time_elapsed,
-                                            accumulated_iteration=upper_iteration,
-                                            accumulated_total_timesteps=upper_total_timesteps,
-                                            prefix='Upper')
-            upper_save_count += train_upper_iteration // upper_save_interval
-            upper_iteration += train_upper_iteration
-            upper_time_elapsed += time.time() - self.upper_agent.start_time
-            upper_total_timesteps += self.upper_agent.num_timesteps
+            if not is_estimate_model_provided:
+                self.load_estimate(latest_lower_model_path, self.estimate_agent.logger)
+                estimate_single_steps = self.estimate_agent.rollout_buffer.n_envs * self.estimate_agent.rollout_buffer.buffer_size
+                self.estimate_agent.learn_estimate(train_estimate_iteration * estimate_single_steps,
+                                                   estimate_callback, log_interval, eval_env, eval_freq, n_eval_episodes,
+                                                   f'Estimate', eval_log_path, reset_num_timesteps, estimate_save_interval,
+                                                   estimate_save_path,
+                                                   accumulated_save_count=estimate_save_count,
+                                                   accumulated_time_elapsed=estimate_time_elapsed,
+                                                   accumulated_iteration=estimate_iteration,
+                                                   accumulated_total_timesteps=estimate_total_timesteps,
+                                                   prefix='Estimate')
+                estimate_save_count += train_estimate_iteration // estimate_save_interval
+                estimate_iteration += train_estimate_iteration
+                estimate_time_elapsed += time.time() - self.estimate_agent.start_time
+                estimate_total_timesteps += self.estimate_agent.num_timesteps
+
+                latest_estimate_model_path = f'{estimate_save_path}_{estimate_save_count}'
+            else:
+                latest_estimate_model_path = train_estimate_model_path
+
+            if not is_upper_model_provided:
+                self.load_upper(latest_estimate_model_path, self.upper_agent.logger)
+                upper_single_steps = self.upper_agent.rollout_buffer.n_envs * self.upper_agent.rollout_buffer.buffer_size
+                self.upper_agent.learn_one_step(train_upper_iteration * upper_single_steps,
+                                                callback, log_interval, eval_env, eval_freq, n_eval_episodes, f'Upper',
+                                                eval_log_path, reset_num_timesteps, upper_save_interval, upper_save_path,
+                                                accumulated_save_count=upper_save_count,
+                                                accumulated_time_elapsed=upper_time_elapsed,
+                                                accumulated_iteration=upper_iteration,
+                                                accumulated_total_timesteps=upper_total_timesteps,
+                                                prefix='Upper')
+                upper_save_count += train_upper_iteration // upper_save_interval
+                upper_iteration += train_upper_iteration
+                upper_time_elapsed += time.time() - self.upper_agent.start_time
+                upper_total_timesteps += self.upper_agent.num_timesteps
+            else:
+                raise NotImplementedError
 
             print(f'Round {iteration + 1} training ends!')
             print('-' * 64 + f' Total Time Elapsed: {time.time() - start_time} ' + '-' * 64)
 
         lower_callback.on_training_end()
+        estimate_callback.on_training_end()
+        upper_callback.on_training_end()
 
-    def load_agent(self, agent_name: str=None, model_path: str=None):
+    def load_agent(self, agent_name: str = None, model_path: str = None):
         assert agent_name is not None, 'Agent name can not be None!'
         assert model_path is not None, 'Model path can not be None!'
         agent_name_list = ['lower', 'estimate', 'upper']
@@ -1044,7 +1091,7 @@ class HrlPPO:
         else:
             assert False, f'Agent name is invalid!\nAgent name must in {agent_name_list}'
 
-    def load_all_agent(self, model_dir: str=None):
+    def load_all_agent(self, model_dir: str = None):
         agent_name_list = ['lower', 'estimate', 'upper']
         agent_list = [self.lower_agent, self.estimate_agent, self.upper_agent]
         postfix = '.zip'
