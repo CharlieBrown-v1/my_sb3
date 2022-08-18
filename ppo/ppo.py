@@ -427,7 +427,7 @@ class HybridPPO(HybridOnPolicyAlgorithm):
 
     def _setup_model(self) -> None:
         super(HybridPPO, self)._setup_model()
-        if self.policy.use_transformer_mlp:
+        if isinstance(self.policy, HybridPolicy) and self.policy.use_transformer_mlp:
             self.policy.mlp_extractor.update_device(self.device)
 
         # Initialize schedules for policy/value clipping

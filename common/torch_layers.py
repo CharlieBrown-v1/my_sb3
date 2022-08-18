@@ -241,7 +241,8 @@ class TransformerMlpExtractor(nn.Module):
                  net_arch: List[Union[int, Dict[str, List[int]]]],
                  activation_fn: Type[nn.Module],
                  device: Union[th.device, str] = "auto",
-                 dropout_probability=0.0,
+                 input_layer_dropout=0.2,
+                 hidden_layer_dropout=0.5,
                  ):
         super(TransformerMlpExtractor, self).__init__()
         device = get_device(device)
@@ -299,7 +300,8 @@ class TransformerMlpExtractor(nn.Module):
 
         # Create networks
         # If the list of layers is empty, the network will just act as an Identity module
-        self.dropout = nn.Dropout(dropout_probability)
+        self.input_dropout = nn.Dropout(input_layer_dropout)
+        self.hidden_dropout = nn.Dropout(hidden_layer_dropout)
 
         self.policy_embedding_layer = nn.Sequential(*policy_embedding_layer).to(device)
         assert len(policy_linear_layer) == len(policy_norm_layer) and len(policy_linear_layer) == len(policy_activation_layer)
@@ -320,24 +322,26 @@ class TransformerMlpExtractor(nn.Module):
         linear_features = self.policy_linear_layer[index](features)
         features = self.policy_activation_layer[index](linear_features) + features
         features = self.policy_norm_layer[index](features)
-        features = self.dropout(features)
+        features = self.hidden_dropout(features)
         return features
 
     def forward_critic_one_layer(self, index: int, features: th.Tensor) -> th.Tensor:
         linear_features = self.value_linear_layer[index](features)
         features = self.value_activation_layer[index](linear_features) + features
         features = self.value_norm_layer[index](features)
-        features = self.dropout(features)
+        features = self.hidden_dropout(features)
         return features
 
     def forward_actor(self, features: th.Tensor) -> th.Tensor:
         latent = self.policy_embedding_layer(features)
+        latent = self.input_dropout(latent)
         for i in range(len(self.policy_linear_layer)):
             latent = self.forward_actor_one_layer(i, latent)
         return latent
 
     def forward_critic(self, features: th.Tensor) -> th.Tensor:
         latent = self.value_embedding_layer(features)
+        latent = self.input_dropout(latent)
         for i in range(len(self.value_linear_layer)):
             latent = self.forward_critic_one_layer(i, latent)
         return latent

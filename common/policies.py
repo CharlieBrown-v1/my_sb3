@@ -915,7 +915,6 @@ class HybridPolicy(ActorCriticPolicy):
                 net_arch=self.net_arch,
                 activation_fn=self.activation_fn,
                 device=self.device,
-                dropout_probability=0,
             )
         else:
             self.mlp_extractor = MlpExtractor(
