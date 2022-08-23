@@ -997,18 +997,15 @@ class HrlPPO:
         upper_callback.on_training_start(locals(), globals())
 
         # judge whether model_path provided or not
-        is_lower_model_provided = train_lower_iteration == 0
-        is_estimate_model_provided = train_estimate_iteration == 0
-        is_upper_model_provided = train_upper_iteration == 0
+        is_lower_model_provided = train_lower_model_path is not None
+        is_estimate_model_provided = train_estimate_model_path is not None
+        is_upper_model_provided = train_upper_model_path is not None
 
         if is_lower_model_provided:
-            assert train_lower_model_path is not None
             self.load_agent('lower', train_lower_model_path)
         if is_estimate_model_provided:
-            assert train_estimate_model_path is not None
             self.load_agent('estimate', train_estimate_model_path)
         if is_upper_model_provided:
-            assert train_upper_model_path is not None
             self.load_agent('upper', train_upper_model_path)
 
         for iteration in range(total_iteration_count):
