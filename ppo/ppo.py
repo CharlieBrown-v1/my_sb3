@@ -907,14 +907,20 @@ class HrlPPO:
 
     def load_estimate(self, lower_model_path: str = None, logger=None):
         assert lower_model_path is not None and logger is not None, 'Model path and logger can not be None!!!'
-        self.estimate_agent = HybridPPO.load(lower_model_path, env=self.wrapped_estimate_env,
-                                             tensorboard_log=self.tensorboard_log)
+        self.estimate_agent = HybridPPO.load(lower_model_path,
+                                             env=self.wrapped_estimate_env,
+                                             tensorboard_log=self.tensorboard_log,
+                                             is_two_stage_env=True,)
         self.estimate_agent.set_logger(logger)
 
     def load_upper(self, lower_model_path: str = None, logger=None):
         assert lower_model_path is not None and logger is not None, 'Model path and logger can not be None!!!'
         wrapped_upper_env = env_wrapper(self.upper_env_id, self.upper_env_num, lower_model_path)
-        self.upper_agent = HybridPPO(self.upper_policy, wrapped_upper_env, self.lr, self.upper_n_steps, verbose=1,
+        self.upper_agent = HybridPPO(self.upper_policy,
+                                     wrapped_upper_env,
+                                     self.lr,
+                                     self.upper_n_steps,
+                                     verbose=1,
                                      tensorboard_log=self.tensorboard_log)
         self.upper_agent.set_logger(logger)
 
