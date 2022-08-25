@@ -838,7 +838,7 @@ def env_wrapper(env_name, num_envs, model_path=None):
     else:
         envs = DummyVecEnv(envs)
 
-    envs = VecNormalize(envs, norm_reward=False, norm_obs=False, training=False)
+    envs = VecNormalize(envs, norm_reward=True, norm_obs=False, training=False)
 
     return envs
 
