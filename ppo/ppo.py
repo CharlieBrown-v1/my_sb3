@@ -643,7 +643,7 @@ class HybridPPO(HybridOnPolicyAlgorithm):
             # Display training infos
             if log_interval is not None and accumulated_iteration % log_interval == 0:
                 fps = int(accumulated_total_timesteps + self.num_timesteps / (
-                            accumulated_time_elapsed + time.time() - self.start_time))
+                        accumulated_time_elapsed + time.time() - self.start_time))
                 self.logger.record(f"{prefix}time/iterations", accumulated_iteration, exclude="tensorboard")
 
                 if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
@@ -736,7 +736,7 @@ class HybridPPO(HybridOnPolicyAlgorithm):
             # Display training infos
             if log_interval is not None and accumulated_iteration % log_interval == 0:
                 fps = int(accumulated_total_timesteps + self.num_timesteps / (
-                            accumulated_time_elapsed + time.time() - self.start_time))
+                        accumulated_time_elapsed + time.time() - self.start_time))
                 self.logger.record(f"{prefix}time/iterations", accumulated_iteration, exclude="tensorboard")
 
                 if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
@@ -787,10 +787,10 @@ class HybridPPO(HybridOnPolicyAlgorithm):
             maybe_ep_info = info.get("episode")
             maybe_is_success = info.get("is_success")
 
-            maybe_removal_done = info.get('removal_done')
+            maybe_removal_done = info.get('removal_done') or info.get('TimeLimit.truncated', False)
             maybe_removal_success = info.get('removal_success')
 
-            maybe_global_done = info.get('global_done')
+            maybe_global_done = info.get('global_done') or (not maybe_removal_done and info.get('TimeLimit.truncated', False))
             maybe_global_success = info.get('global_success')
 
             if maybe_ep_info is not None:
@@ -912,7 +912,7 @@ class HrlPPO:
         self.estimate_agent = HybridPPO.load(lower_model_path,
                                              env=self.wrapped_estimate_env,
                                              tensorboard_log=self.tensorboard_log,
-                                             is_two_stage_env=True,)
+                                             is_two_stage_env=True, )
         self.estimate_agent.set_logger(logger)
 
     def load_upper(self, lower_model_path: str = None, logger=None):
@@ -1043,8 +1043,10 @@ class HrlPPO:
                 self.load_estimate(latest_lower_model_path, self.estimate_agent.logger)
                 estimate_single_steps = self.estimate_agent.rollout_buffer.n_envs * self.estimate_agent.rollout_buffer.buffer_size
                 self.estimate_agent.learn_estimate(train_estimate_iteration * estimate_single_steps,
-                                                   estimate_callback, log_interval, eval_env, eval_freq, n_eval_episodes,
-                                                   f'Estimate', eval_log_path, reset_num_timesteps, estimate_save_interval,
+                                                   estimate_callback, log_interval, eval_env, eval_freq,
+                                                   n_eval_episodes,
+                                                   f'Estimate', eval_log_path, reset_num_timesteps,
+                                                   estimate_save_interval,
                                                    estimate_save_path,
                                                    accumulated_save_count=estimate_save_count,
                                                    accumulated_time_elapsed=estimate_time_elapsed,
@@ -1065,7 +1067,8 @@ class HrlPPO:
                 upper_single_steps = self.upper_agent.rollout_buffer.n_envs * self.upper_agent.rollout_buffer.buffer_size
                 self.upper_agent.learn_one_step(train_upper_iteration * upper_single_steps,
                                                 callback, log_interval, eval_env, eval_freq, n_eval_episodes, f'Upper',
-                                                eval_log_path, reset_num_timesteps, upper_save_interval, upper_save_path,
+                                                eval_log_path, reset_num_timesteps, upper_save_interval,
+                                                upper_save_path,
                                                 accumulated_save_count=upper_save_count,
                                                 accumulated_time_elapsed=upper_time_elapsed,
                                                 accumulated_iteration=upper_iteration,
