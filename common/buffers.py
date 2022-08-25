@@ -820,17 +820,6 @@ class HybridDictRolloutBuffer(DictRolloutBuffer):
             log_prob: th.Tensor,
             is_success: th.Tensor = None,  # DIY
     ) -> None:
-        """
-        :param obs: Observation
-        :param action: Action
-        :param reward:
-        :param episode_start: Start of episode signal.
-        :param value: estimated value of the current state
-            following the current policy.
-        :param log_prob: log probability of the action
-            following the current policy.
-        :param is_success: used by estimate function
-        """
         if len(log_prob.shape) == 0:
             # Reshape 0-d tensor to avoid error
             log_prob = log_prob.reshape(-1, 1)
@@ -917,6 +906,11 @@ class HybridDictRolloutBuffer(DictRolloutBuffer):
 
         # DIY
         self.is_successes = tmp_is_successes
+        for key, value in self.observation_space.spaces.items():
+            invalid_observation = np.zeros(value.shape)
+            for i in range(len(total_episode_starts_idx_list)):
+                last_starts_idx = total_episode_starts_idx_list[i][-1]
+                self.observations[key][last_starts_idx:, i] = invalid_observation
 
         # TD(lambda) estimator, see GitHub PR #375 or "Telescoping in TD(lambda)"
         # in David Silver Lecture 4: https://www.youtube.com/watch?v=PnHCvfgC_ZA
@@ -933,7 +927,8 @@ class HybridDictRolloutBuffer(DictRolloutBuffer):
 
             # DIY
             _tensor_names = ["actions", "values", "log_probs", "advantages", "returns",
-                             "is_successes"]
+                             "is_successes",
+                             ]
 
             for tensor in _tensor_names:
                 self.__dict__[tensor] = self.swap_and_flatten(self.__dict__[tensor])

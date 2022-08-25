@@ -2,13 +2,16 @@ from itertools import zip_longest
 from typing import Dict, List, Tuple, Type, Union
 
 import gym
-import torch
 import torch as th
 from torch import nn
 
 from stable_baselines3.common.preprocessing import get_flattened_obs_dim, is_image_space
 from stable_baselines3.common.type_aliases import TensorDict
 from stable_baselines3.common.utils import get_device
+
+# DIY
+from stable_baselines3.common.pointconv_utils import PointConvDensitySetAbstraction
+import torch.nn.functional as F
 
 
 class BaseFeaturesExtractor(nn.Module):
@@ -235,6 +238,7 @@ class MlpExtractor(nn.Module):
         return self.value_net(self.shared_net(features))
 
 
+# DIY
 class TransformerMlpExtractor(nn.Module):
     def __init__(self,
                  feature_dim: int,
@@ -408,7 +412,10 @@ class HybridExtractor(BaseFeaturesExtractor):
     :param cnn_output_dim: Number of features to output from CNN module, Defaults to 64.
     """
 
-    def __init__(self, observation_space: gym.spaces.Dict, cube_shape: list = None, cnn_output_dim: int = 64):
+    def __init__(self, observation_space: gym.spaces.Dict,
+                 cube_shape: list = None,
+                 cube_extractor_cls: str = 'CNN',
+                 output_dim: int = 64):
         # TODO we do not know features-dim here before going over all the items, so put something there. This is dirty!
         super(HybridExtractor, self).__init__(observation_space, features_dim=1)
 
@@ -417,8 +424,12 @@ class HybridExtractor(BaseFeaturesExtractor):
         total_concat_size = 0
         for key, subspace in observation_space.spaces.items():
             if cube_shape is not None and key == 'observation':
-                extractors[key] = HybridNatureCNN(subspace, cube_shape=cube_shape, features_dim=cnn_output_dim)
-                total_concat_size += cnn_output_dim + extractors[key].physical_len
+                if cube_extractor_cls == 'CNN':
+                    extractors[key] = HybridNatureCNN(subspace, cube_shape=cube_shape, features_dim=output_dim)
+                elif cube_extractor_cls == 'PointNet':
+                    extractors[key] = HybridPointNet(subspace, cube_shape=cube_shape, features_dim=output_dim)
+
+                total_concat_size += output_dim + extractors[key].physical_len
             else:
                 # The observation key is a vector, flatten it if needed
                 extractors[key] = nn.Flatten()
@@ -481,6 +492,73 @@ class HybridNatureCNN(BaseFeaturesExtractor):
         physical_hidden = observations[:, self.cube_len:]
         hidden = th.cat([cube_hidden, physical_hidden], -1)
         return hidden
+
+
+class PointConvDensityClsSsg(nn.Module):
+    def __init__(self, num_classes=40):
+        super(PointConvDensityClsSsg, self).__init__()
+        feature_dim = 3
+        self.sa1 = PointConvDensitySetAbstraction(npoint=512, nsample=32, in_channel=feature_dim + 3, mlp=[64, 64, 128], bandwidth = 0.1, group_all=False)
+        self.sa2 = PointConvDensitySetAbstraction(npoint=128, nsample=64, in_channel=128 + 3, mlp=[128, 128, 256], bandwidth = 0.2, group_all=False)
+        self.sa3 = PointConvDensitySetAbstraction(npoint=1, nsample=None, in_channel=256 + 3, mlp=[256, 512, 1024], bandwidth = 0.4, group_all=True)
+        self.fc1 = nn.Linear(1024, 512)
+        self.bn1 = nn.BatchNorm1d(512)
+        self.drop1 = nn.Dropout(0.7)
+        self.fc2 = nn.Linear(512, 256)
+        self.bn2 = nn.BatchNorm1d(256)
+        self.drop2 = nn.Dropout(0.7)
+        self.fc3 = nn.Linear(256, num_classes)
+
+    def forward(self, xyz, feat):
+        B, _, _ = xyz.shape
+        l1_xyz, l1_points = self.sa1(xyz, feat)
+        l2_xyz, l2_points = self.sa2(l1_xyz, l1_points)
+        l3_xyz, l3_points = self.sa3(l2_xyz, l2_points)
+        x = l3_points.view(B, 1024)
+        x = self.drop1(F.relu(self.bn1(self.fc1(x))))
+        x = self.drop2(F.relu(self.bn2(self.fc2(x))))
+        x = self.fc3(x)
+        x = F.log_softmax(x, -1)
+        return x
+
+
+# DIY
+class HybridPointNet(BaseFeaturesExtractor):
+    def __init__(self, observation_space: gym.spaces.Box, cube_shape: list = None, features_dim: int = 64):
+        super(HybridPointNet, self).__init__(observation_space, features_dim)
+        self.cube_len = th.prod(th.as_tensor(cube_shape), dtype=th.int)
+
+        self.sa1 = PointConvDensitySetAbstraction(npoint=512, nsample=32, in_channel=self.cube_len + 3,
+                                                  mlp=[64, 64, 128], bandwidth=0.1, group_all=False)
+        self.sa2 = PointConvDensitySetAbstraction(npoint=128, nsample=64, in_channel=128 + 3,
+                                                  mlp=[128, 128, 256], bandwidth=0.2, group_all=False)
+        self.sa3 = PointConvDensitySetAbstraction(npoint=1, nsample=None, in_channel=256 + 3,
+                                                  mlp=[256, 512, 1024], bandwidth=0.4, group_all=True)
+        self.fc1 = nn.Linear(1024, 512)
+        self.bn1 = nn.BatchNorm1d(512)
+        self.drop1 = nn.Dropout(0.7)
+        self.fc2 = nn.Linear(512, 256)
+        self.bn2 = nn.BatchNorm1d(256)
+        self.drop2 = nn.Dropout(0.7)
+        self.fc3 = nn.Linear(256, features_dim)
+
+    def forward(self, observations: th.Tensor) -> th.Tensor:
+        cube_flatten = th.reshape(observations[:, :self.cube_len], shape=[-1, self.n_input_channels] + self.cube_shape)
+
+        B, _, _ = cube_flatten.shape
+        l1_xyz, l1_points = self.sa1(cube_flatten, None)
+        l2_xyz, l2_points = self.sa2(l1_xyz, l1_points)
+        l3_xyz, l3_points = self.sa3(l2_xyz, l2_points)
+        cube_latent = l3_points.view(B, 1024)
+        cube_latent = self.drop1(F.relu(self.bn1(self.fc1(cube_latent))))
+        cube_latent = self.drop2(F.relu(self.bn2(self.fc2(cube_latent))))
+        cube_latent = self.fc3(cube_latent)
+        cube_latent = F.log_softmax(cube_latent, -1)
+
+        physical_latent = observations[:, self.cube_len:]
+        latent = th.cat([cube_latent, physical_latent], -1)
+
+        return latent
 
 
 # DIY

@@ -365,7 +365,7 @@ class HybridOnPolicyAlgorithm(OnPolicyAlgorithm):
             self,
             env: VecEnv,
             callback: BaseCallback,
-            rollout_buffer: RolloutBuffer,
+            rollout_buffer: HybridDictRolloutBuffer,
             n_rollout_steps: int,
     ) -> bool:
         """
@@ -426,11 +426,12 @@ class HybridOnPolicyAlgorithm(OnPolicyAlgorithm):
                 actions = actions.reshape(-1, 1)
 
             if self.is_two_stage_env:
-                train_dones = np.array([info['train_done'] for info in infos])
+                train_dones = np.array([info['train_done'] or info.get('TimeLimit.truncated', False) for info in infos])
                 train_is_successes = th.as_tensor([info['train_is_success'] for info in infos]).to(self.device)
 
                 rollout_buffer.add(self._last_obs, actions, rewards, self._last_episode_starts, values, log_probs,
-                                   train_is_successes)
+                                   train_is_successes,
+                                   )
             else:
                 rollout_buffer.add(self._last_obs, actions, rewards, self._last_episode_starts, values, log_probs)
 

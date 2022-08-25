@@ -29,6 +29,7 @@ class RolloutBufferSamples(NamedTuple):
     advantages: th.Tensor
     returns: th.Tensor
 
+
 class DictRolloutBufferSamples(RolloutBufferSamples):
     observations: TensorDict
     actions: th.Tensor
@@ -36,6 +37,7 @@ class DictRolloutBufferSamples(RolloutBufferSamples):
     old_log_prob: th.Tensor
     advantages: th.Tensor
     returns: th.Tensor
+
 
 # DIY
 class HybridDictRolloutBufferSamples(NamedTuple):
@@ -46,6 +48,7 @@ class HybridDictRolloutBufferSamples(NamedTuple):
     advantages: th.Tensor
     returns: th.Tensor
     is_successes: th.Tensor
+
 
 class ReplayBufferSamples(NamedTuple):
     observations: th.Tensor
