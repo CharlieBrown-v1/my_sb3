@@ -565,9 +565,11 @@ class HybridPPO(HybridOnPolicyAlgorithm):
 
                 success_rates_pred = self.policy.estimate_observations(rollout_data.observations).flatten()
 
-                loss = F.binary_cross_entropy(success_rates_pred, rollout_data.is_successes)
-
+                masks = rollout_data.masks
+                loss = F.binary_cross_entropy(success_rates_pred, rollout_data.is_successes,
+                                              weight=masks, reduction='sum') / masks.sum()
                 loss_item = loss.item()
+
                 if loss_item < min_loss:
                     min_loss = loss_item
                     loss_remain_times = 0

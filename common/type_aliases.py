@@ -48,6 +48,7 @@ class HybridDictRolloutBufferSamples(NamedTuple):
     advantages: th.Tensor
     returns: th.Tensor
     is_successes: th.Tensor
+    masks: th.Tensor
 
 
 class ReplayBufferSamples(NamedTuple):

@@ -802,6 +802,7 @@ class HybridDictRolloutBuffer(DictRolloutBuffer):
 
         # DIY
         self.is_successes = None
+        self.masks = None
 
         self.reset()
 
@@ -809,6 +810,7 @@ class HybridDictRolloutBuffer(DictRolloutBuffer):
         super(HybridDictRolloutBuffer, self).reset()
         # DIY
         self.is_successes = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.masks = np.ones((self.buffer_size, self.n_envs), dtype=np.float32)
 
     def add(
             self,
@@ -906,11 +908,9 @@ class HybridDictRolloutBuffer(DictRolloutBuffer):
 
         # DIY
         self.is_successes = tmp_is_successes
-        for key, value in self.observation_space.spaces.items():
-            invalid_observation = np.zeros(value.shape)
-            for i in range(len(total_episode_starts_idx_list)):
-                last_starts_idx = total_episode_starts_idx_list[i][-1]
-                self.observations[key][last_starts_idx:, i] = invalid_observation
+        for i in range(len(total_episode_starts_idx_list)):
+            last_starts_idx = total_episode_starts_idx_list[i][-1]
+            self.masks[last_starts_idx:, i] = 0
 
         # TD(lambda) estimator, see GitHub PR #375 or "Telescoping in TD(lambda)"
         # in David Silver Lecture 4: https://www.youtube.com/watch?v=PnHCvfgC_ZA
@@ -928,6 +928,7 @@ class HybridDictRolloutBuffer(DictRolloutBuffer):
             # DIY
             _tensor_names = ["actions", "values", "log_probs", "advantages", "returns",
                              "is_successes",
+                             "masks",
                              ]
 
             for tensor in _tensor_names:
@@ -954,4 +955,5 @@ class HybridDictRolloutBuffer(DictRolloutBuffer):
             advantages=self.to_torch(self.advantages[batch_inds].flatten()),
             returns=self.to_torch(self.returns[batch_inds].flatten()),
             is_successes=self.to_torch(self.is_successes[batch_inds].flatten()),
+            masks=self.to_torch(self.masks[batch_inds].flatten()),
         )
