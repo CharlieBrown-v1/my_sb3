@@ -464,41 +464,29 @@ class HybridNatureCNN(BaseFeaturesExtractor):
         self.physical_len = th.as_tensor(observation_space.shape) - self.cube_len
         self.n_input_channels = 1
 
-        self.conv1 = nn.Conv3d(self.n_input_channels, 32, kernel_size=(3, 3, 3), stride=(1, 1, 1))
-        self.normalization1 = nn.BatchNorm3d(32)
-        self.pool1 = nn.MaxPool3d(kernel_size=(1, 2, 2), stride=(1, 2, 2))
-        self.drop1 = nn.Dropout(0.2)
-
-        self.conv2 = nn.Conv3d(32, 64, kernel_size=(3, 3, 3), stride=(1, 1, 1))
-        self.normalization2 = nn.BatchNorm3d(64)
-        self.pool2 = nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2))
-        self.drop2 = nn.Dropout(0.5)
-
-        self.conv3 = nn.Conv3d(64, 64, kernel_size=(3, 3, 2), stride=(1, 1, 1))
-        self.normalization3 = nn.BatchNorm3d(64)
-        self.pool3 = nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2), padding=(0, 1, 1))
-        self.drop3 = nn.Dropout(0.5)
+        self.cnn = nn.Sequential(
+            nn.Conv3d(self.n_input_channels, 32, kernel_size=(3, 3, 3), stride=(1, 1, 1)),
+            nn.ReLU(),
+            nn.MaxPool3d(kernel_size=(1, 2, 2), stride=(1, 2, 2)),
+            nn.Conv3d(32, 64, kernel_size=(3, 3, 3), stride=(1, 1, 1)),
+            nn.ReLU(),
+            nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2)),
+            nn.Conv3d(64, 64, kernel_size=(3, 3, 2), stride=(1, 1, 1)),
+            nn.ReLU(),
+            nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2), padding=(0, 1, 1)),
+            nn.Flatten(),
+        )
 
         # Compute shape by doing one forward pass
         with th.no_grad():
             samples = observation_space.sample()[: self.cube_len].reshape([-1, self.n_input_channels] + self.cube_shape)
-            latent = th.as_tensor(samples)
-            latent = self.drop1(self.pool1(self.normalization1(self.conv1(latent))))
-            latent = self.drop2(self.pool2(self.normalization2(self.conv2(latent))))
-            latent = self.drop3(self.pool3(self.normalization3(self.conv3(latent))))
-            n_flatten = latent.flatten().shape[0]
+            n_flatten = self.cnn(th.as_tensor(samples)).shape[1]
 
         self.linear = nn.Sequential(nn.Linear(n_flatten, features_dim), nn.ReLU())
 
     def forward(self, observations: th.Tensor) -> th.Tensor:
-        batch_size = observations.shape[0]
         cube_latent = th.reshape(observations[:, :self.cube_len], shape=[-1, self.n_input_channels] + self.cube_shape)
-
-        cube_latent = self.drop1(self.pool1(F.relu(self.normalization1(self.conv1(cube_latent)))))
-        cube_latent = self.drop2(self.pool2(F.relu(self.normalization2(self.conv2(cube_latent)))))
-        cube_latent = self.drop3(self.pool3(F.relu(self.normalization3(self.conv3(cube_latent)))))
-        cube_latent = self.linear(cube_latent.view(batch_size, -1))
-
+        cube_latent = self.linear(self.cnn(cube_latent))
         physical_latent = observations[:, self.cube_len:]
         latent = th.cat([cube_latent, physical_latent], -1)
         return latent
