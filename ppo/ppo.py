@@ -790,7 +790,7 @@ class HybridPPO(HybridOnPolicyAlgorithm):
             maybe_removal_done = info.get('removal_done') or info.get('TimeLimit.truncated', False)
             maybe_removal_success = info.get('removal_success')
 
-            maybe_global_done = info.get('global_done') or (not maybe_removal_done and info.get('TimeLimit.truncated', False))
+            maybe_global_done = info.get('global_done') or (not info.get('removal_done') and info.get('TimeLimit.truncated', False))
             maybe_global_success = info.get('global_success')
 
             if maybe_ep_info is not None:
