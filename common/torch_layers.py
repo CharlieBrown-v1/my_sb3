@@ -9,8 +9,6 @@ from stable_baselines3.common.preprocessing import get_flattened_obs_dim, is_ima
 from stable_baselines3.common.type_aliases import TensorDict
 from stable_baselines3.common.utils import get_device
 
-# DIY
-from stable_baselines3.common.pointconv_utils import PointConvDensitySetAbstraction
 import torch.nn.functional as F
 
 
@@ -409,7 +407,7 @@ class HybridExtractor(BaseFeaturesExtractor):
     The output features are concatenated and fed through additional MLP network.
 
     :param observation_space:
-    :param cnn_output_dim: Number of features to output from CNN module, Defaults to 64.
+    :param (cnn_output_dim: Number of features to output from CNN module, Defaults to 64.
     """
 
     def __init__(self, observation_space: gym.spaces.Dict,
@@ -426,8 +424,8 @@ class HybridExtractor(BaseFeaturesExtractor):
             if cube_shape is not None and key == 'observation':
                 if cube_extractor_cls == 'CNN':
                     extractors[key] = HybridNatureCNN(subspace, cube_shape=cube_shape, features_dim=output_dim)
-                elif cube_extractor_cls == 'PointNet':
-                    extractors[key] = HybridPointNet(subspace, cube_shape=cube_shape, features_dim=output_dim)
+                else:
+                    raise NotImplementedError
 
                 total_concat_size += output_dim + extractors[key].physical_len
             else:
@@ -466,98 +464,43 @@ class HybridNatureCNN(BaseFeaturesExtractor):
         self.physical_len = th.as_tensor(observation_space.shape) - self.cube_len
         self.n_input_channels = 1
 
-        self.cnn = nn.Sequential(
-            nn.Conv3d(self.n_input_channels, 32, kernel_size=(3, 3, 3), stride=(1, 1, 1)),
-            nn.ReLU(),
-            nn.MaxPool3d(kernel_size=(1, 2, 2), stride=(1, 2, 2)),
-            nn.Conv3d(32, 64, kernel_size=(3, 3, 3), stride=(1, 1, 1)),
-            nn.ReLU(),
-            nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2)),
-            nn.Conv3d(64, 64, kernel_size=(3, 3, 2), stride=(1, 1, 1)),
-            nn.ReLU(),
-            nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2), padding=(0, 1, 1)),
-            nn.Flatten(),
-        )
+        self.conv1 = nn.Conv3d(self.n_input_channels, 32, kernel_size=(3, 3, 3), stride=(1, 1, 1))
+        self.normalization1 = nn.BatchNorm3d(32)
+        self.pool1 = nn.MaxPool3d(kernel_size=(1, 2, 2), stride=(1, 2, 2))
+        self.drop1 = nn.Dropout(0.2)
+
+        self.conv2 = nn.Conv3d(32, 64, kernel_size=(3, 3, 3), stride=(1, 1, 1))
+        self.normalization2 = nn.BatchNorm3d(64)
+        self.pool2 = nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2))
+        self.drop2 = nn.Dropout(0.5)
+
+        self.conv3 = nn.Conv3d(64, 64, kernel_size=(3, 3, 2), stride=(1, 1, 1))
+        self.normalization3 = nn.BatchNorm3d(64)
+        self.pool3 = nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2), padding=(0, 1, 1))
+        self.drop3 = nn.Dropout(0.5)
 
         # Compute shape by doing one forward pass
         with th.no_grad():
             samples = observation_space.sample()[: self.cube_len].reshape([-1, self.n_input_channels] + self.cube_shape)
-            n_flatten = self.cnn(th.as_tensor(samples)).shape[1]
+            latent = th.as_tensor(samples)
+            latent = self.drop1(self.pool1(self.normalization1(self.conv1(latent))))
+            latent = self.drop2(self.pool2(self.normalization2(self.conv2(latent))))
+            latent = self.drop3(self.pool3(self.normalization3(self.conv3(latent))))
+            n_flatten = latent.flatten().shape[0]
 
         self.linear = nn.Sequential(nn.Linear(n_flatten, features_dim), nn.ReLU())
 
     def forward(self, observations: th.Tensor) -> th.Tensor:
+        batch_size = observations.shape[0]
         cube_latent = th.reshape(observations[:, :self.cube_len], shape=[-1, self.n_input_channels] + self.cube_shape)
-        cube_hidden = self.linear(self.cnn(cube_latent))
-        physical_hidden = observations[:, self.cube_len:]
-        hidden = th.cat([cube_hidden, physical_hidden], -1)
-        return hidden
 
-
-class PointConvDensityClsSsg(nn.Module):
-    def __init__(self, num_classes=40):
-        super(PointConvDensityClsSsg, self).__init__()
-        feature_dim = 3
-        self.sa1 = PointConvDensitySetAbstraction(npoint=512, nsample=32, in_channel=feature_dim + 3, mlp=[64, 64, 128], bandwidth = 0.1, group_all=False)
-        self.sa2 = PointConvDensitySetAbstraction(npoint=128, nsample=64, in_channel=128 + 3, mlp=[128, 128, 256], bandwidth = 0.2, group_all=False)
-        self.sa3 = PointConvDensitySetAbstraction(npoint=1, nsample=None, in_channel=256 + 3, mlp=[256, 512, 1024], bandwidth = 0.4, group_all=True)
-        self.fc1 = nn.Linear(1024, 512)
-        self.bn1 = nn.BatchNorm1d(512)
-        self.drop1 = nn.Dropout(0.7)
-        self.fc2 = nn.Linear(512, 256)
-        self.bn2 = nn.BatchNorm1d(256)
-        self.drop2 = nn.Dropout(0.7)
-        self.fc3 = nn.Linear(256, num_classes)
-
-    def forward(self, xyz, feat):
-        B, _, _ = xyz.shape
-        l1_xyz, l1_points = self.sa1(xyz, feat)
-        l2_xyz, l2_points = self.sa2(l1_xyz, l1_points)
-        l3_xyz, l3_points = self.sa3(l2_xyz, l2_points)
-        x = l3_points.view(B, 1024)
-        x = self.drop1(F.relu(self.bn1(self.fc1(x))))
-        x = self.drop2(F.relu(self.bn2(self.fc2(x))))
-        x = self.fc3(x)
-        x = F.log_softmax(x, -1)
-        return x
-
-
-# DIY
-class HybridPointNet(BaseFeaturesExtractor):
-    def __init__(self, observation_space: gym.spaces.Box, cube_shape: list = None, features_dim: int = 64):
-        super(HybridPointNet, self).__init__(observation_space, features_dim)
-        self.cube_len = th.prod(th.as_tensor(cube_shape), dtype=th.int)
-
-        self.sa1 = PointConvDensitySetAbstraction(npoint=512, nsample=32, in_channel=self.cube_len + 3,
-                                                  mlp=[64, 64, 128], bandwidth=0.1, group_all=False)
-        self.sa2 = PointConvDensitySetAbstraction(npoint=128, nsample=64, in_channel=128 + 3,
-                                                  mlp=[128, 128, 256], bandwidth=0.2, group_all=False)
-        self.sa3 = PointConvDensitySetAbstraction(npoint=1, nsample=None, in_channel=256 + 3,
-                                                  mlp=[256, 512, 1024], bandwidth=0.4, group_all=True)
-        self.fc1 = nn.Linear(1024, 512)
-        self.bn1 = nn.BatchNorm1d(512)
-        self.drop1 = nn.Dropout(0.7)
-        self.fc2 = nn.Linear(512, 256)
-        self.bn2 = nn.BatchNorm1d(256)
-        self.drop2 = nn.Dropout(0.7)
-        self.fc3 = nn.Linear(256, features_dim)
-
-    def forward(self, observations: th.Tensor) -> th.Tensor:
-        cube_flatten = th.reshape(observations[:, :self.cube_len], shape=[-1, self.n_input_channels] + self.cube_shape)
-
-        B, _, _ = cube_flatten.shape
-        l1_xyz, l1_points = self.sa1(cube_flatten, None)
-        l2_xyz, l2_points = self.sa2(l1_xyz, l1_points)
-        l3_xyz, l3_points = self.sa3(l2_xyz, l2_points)
-        cube_latent = l3_points.view(B, 1024)
-        cube_latent = self.drop1(F.relu(self.bn1(self.fc1(cube_latent))))
-        cube_latent = self.drop2(F.relu(self.bn2(self.fc2(cube_latent))))
-        cube_latent = self.fc3(cube_latent)
-        cube_latent = F.log_softmax(cube_latent, -1)
+        cube_latent = self.drop1(self.pool1(F.relu(self.normalization1(self.conv1(cube_latent)))))
+        cube_latent = self.drop2(self.pool2(F.relu(self.normalization2(self.conv2(cube_latent)))))
+        cube_latent = self.drop3(self.pool3(F.relu(self.normalization3(self.conv3(cube_latent)))))
+        cube_latent = self.linear(cube_latent.view(batch_size, -1))
 
         physical_latent = observations[:, self.cube_len:]
         latent = th.cat([cube_latent, physical_latent], -1)
-
         return latent
 
 
