@@ -348,6 +348,22 @@ class HybridOnPolicyAlgorithm(OnPolicyAlgorithm):
             n_envs=self.n_envs,
         )
 
+    def reset_rollout_buffer(self, env):
+        if self.is_two_stage_env:
+            buffer_cls = HybridDictRolloutBuffer
+        else:
+            buffer_cls = DictRolloutBuffer if isinstance(self.observation_space, gym.spaces.Dict) else RolloutBuffer
+
+        self.rollout_buffer = buffer_cls(
+            self.n_steps,
+            self.observation_space,
+            self.action_space,
+            self.device,
+            gamma=self.gamma,
+            gae_lambda=self.gae_lambda,
+            n_envs=env.num_envs,
+        )
+
     def train(self) -> None:
         raise NotImplementedError
 

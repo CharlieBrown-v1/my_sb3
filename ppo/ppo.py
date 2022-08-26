@@ -912,7 +912,8 @@ class HrlPPO:
         self.estimate_agent = HybridPPO.load(lower_model_path,
                                              env=self.wrapped_estimate_env,
                                              tensorboard_log=self.tensorboard_log,
-                                             is_two_stage_env=True, )
+                                             is_two_stage_env=True)
+        self.estimate_agent.reset_rollout_buffer(self.wrapped_estimate_env)
         self.estimate_agent.set_logger(logger)
 
     def load_upper(self, lower_model_path: str = None, logger=None):
@@ -968,6 +969,18 @@ class HrlPPO:
 
         start_time = time.time()
 
+        # judge whether model_path provided or not
+        is_lower_model_provided = train_lower_model_path is not None
+        is_estimate_model_provided = train_estimate_model_path is not None
+        is_upper_model_provided = train_upper_model_path is not None
+
+        if is_lower_model_provided:
+            self.load_agent(env=self.lower_agent.env, agent_name='lower', model_path=train_lower_model_path)
+        if is_estimate_model_provided:
+            self.load_agent(env=self.estimate_agent.env, agent_name='estimate', model_path=train_estimate_model_path)
+        if is_upper_model_provided:
+            self.load_agent(env=self.upper_agent.env, agent_name='upper', model_path=train_upper_model_path)
+
         lower_single_steps = self.lower_agent.rollout_buffer.n_envs * self.lower_agent.rollout_buffer.buffer_size
         lower_total_steps = lower_single_steps * total_iteration_count
         lower_total_steps, lower_callback = self.lower_agent.setup_learn(total_timesteps=lower_total_steps,
@@ -1003,18 +1016,6 @@ class HrlPPO:
         lower_callback.on_training_start(locals(), globals())
         estimate_callback.on_training_start(locals(), globals())
         upper_callback.on_training_start(locals(), globals())
-
-        # judge whether model_path provided or not
-        is_lower_model_provided = train_lower_model_path is not None
-        is_estimate_model_provided = train_estimate_model_path is not None
-        is_upper_model_provided = train_upper_model_path is not None
-
-        if is_lower_model_provided:
-            self.load_agent('lower', train_lower_model_path)
-        if is_estimate_model_provided:
-            self.load_agent('estimate', train_estimate_model_path)
-        if is_upper_model_provided:
-            self.load_agent('upper', train_upper_model_path)
 
         for iteration in range(total_iteration_count):
             print(f'Round {iteration + 1} training starts!')
@@ -1088,16 +1089,21 @@ class HrlPPO:
         estimate_callback.on_training_end()
         upper_callback.on_training_end()
 
-    def load_agent(self, agent_name: str = None, model_path: str = None):
+    def load_agent(self, env: gym.Env = None, agent_name: str = None, model_path: str = None):
+        assert env is not None,        'Env can not be None!'
         assert agent_name is not None, 'Agent name can not be None!'
         assert model_path is not None, 'Model path can not be None!'
         agent_name_list = ['lower', 'estimate', 'upper']
+
         if agent_name == 'lower':
-            self.lower_agent.load(model_path)
+            self.lower_agent.load(model_path, env=env)
+            self.lower_agent.reset_rollout_buffer(env)
         elif agent_name == 'estimate':
-            self.estimate_agent.load(model_path)
+            self.estimate_agent.load(model_path, env=env)
+            self.estimate_agent.reset_rollout_buffer(env)
         elif agent_name == 'upper':
-            self.upper_agent.load(model_path)
+            self.upper_agent.load(model_path, env=env)
+            self.upper_agent.reset_rollout_buffer(env)
         else:
             assert False, f'Agent name is invalid!\nAgent name must in {agent_name_list}'
 
