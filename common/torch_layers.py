@@ -236,129 +236,6 @@ class MlpExtractor(nn.Module):
         return self.value_net(self.shared_net(features))
 
 
-# DIY
-class TransformerMlpExtractor(nn.Module):
-    def __init__(self,
-                 feature_dim: int,
-                 net_arch: List[Union[int, Dict[str, List[int]]]],
-                 activation_fn: Type[nn.Module],
-                 device: Union[th.device, str] = "auto",
-                 input_layer_dropout=0.2,
-                 hidden_layer_dropout=0.5,
-                 ):
-        super(TransformerMlpExtractor, self).__init__()
-        device = get_device(device)
-        policy_embedding_layer = []
-        value_embedding_layer = []
-        policy_linear_layer, value_linear_layer = [], []
-        policy_norm_layer, value_norm_layer = [], []
-        policy_activation_layer, value_activation_layer = [], []
-        policy_only_layers = []  # Layer sizes of the network that only belongs to the policy network
-        value_only_layers = []  # Layer sizes of the network that only belongs to the value network
-        last_layer_dim_shared = feature_dim
-
-        for layer in net_arch:
-            if isinstance(layer, int):
-                raise NotImplementedError
-            else:
-                assert isinstance(layer, dict), "Error: the net_arch list can only contain ints and dicts"
-                if "pi" in layer:
-                    assert isinstance(layer["pi"], list), "Error: net_arch[-1]['pi'] must contain a list of integers."
-                    policy_only_layers = layer["pi"]
-
-                if "vf" in layer:
-                    assert isinstance(layer["vf"], list), "Error: net_arch[-1]['vf'] must contain a list of integers."
-                    value_only_layers = layer["vf"]
-                break  # From here on the network splits up in policy and value network
-
-        last_layer_dim_pi = feature_dim
-        last_layer_dim_vf = feature_dim
-
-        # Build the non-shared part of the network
-        for pi_layer_size, vf_layer_size in zip_longest(policy_only_layers, value_only_layers):
-            if pi_layer_size is not None:
-                assert isinstance(pi_layer_size, int), "Error: net_arch[-1]['pi'] must only contain integers."
-                policy_linear_layer.append(nn.Linear(pi_layer_size, pi_layer_size).to(device))
-                policy_norm_layer.append(nn.LayerNorm(pi_layer_size).to(device))
-                policy_activation_layer.append(activation_fn())
-                last_layer_dim_pi = pi_layer_size
-
-            if vf_layer_size is not None:
-                assert isinstance(vf_layer_size, int), "Error: net_arch[-1]['vf'] must only contain integers."
-                value_linear_layer.append(nn.Linear(vf_layer_size, vf_layer_size).to(device))
-                value_norm_layer.append(nn.LayerNorm(vf_layer_size).to(device))
-                value_activation_layer.append(activation_fn())
-                last_layer_dim_vf = vf_layer_size
-
-        assert len(policy_linear_layer) != 0 and len(value_linear_layer) != 0
-
-        policy_embedding_layer.append(nn.Linear(feature_dim, policy_linear_layer[0].in_features))
-        value_embedding_layer.append(nn.Linear(feature_dim, value_linear_layer[0].in_features))
-
-        # Save dim, used to create the distributions
-        self.latent_dim_pi = last_layer_dim_pi
-        self.latent_dim_vf = last_layer_dim_vf
-        self.device = device
-
-        # Create networks
-        # If the list of layers is empty, the network will just act as an Identity module
-        self.input_dropout = nn.Dropout(input_layer_dropout)
-        self.hidden_dropout = nn.Dropout(hidden_layer_dropout)
-
-        self.policy_embedding_layer = nn.Sequential(*policy_embedding_layer).to(device)
-        assert len(policy_linear_layer) == len(policy_norm_layer) and len(policy_linear_layer) == len(policy_activation_layer)
-        self.policy_linear_layer = policy_linear_layer.copy()
-        self.policy_norm_layer = policy_norm_layer.copy()
-        self.policy_activation_layer = policy_activation_layer.copy()
-
-        self.value_embedding_layer = nn.Sequential(*value_embedding_layer).to(device)
-        assert len(value_linear_layer) == len(value_norm_layer) and len(value_linear_layer) == len(value_activation_layer)
-        self.value_linear_layer = value_linear_layer.copy()
-        self.value_norm_layer = value_norm_layer.copy()
-        self.value_activation_layer = value_activation_layer.copy()
-
-    def forward(self, features: th.Tensor) -> Tuple[th.Tensor, th.Tensor]:
-        return self.forward_actor(features), self.forward_critic(features)
-
-    def forward_actor_one_layer(self, index: int, features: th.Tensor) -> th.Tensor:
-        linear_features = self.policy_linear_layer[index](features)
-        features = self.policy_activation_layer[index](linear_features) + features
-        features = self.policy_norm_layer[index](features)
-        features = self.hidden_dropout(features)
-        return features
-
-    def forward_critic_one_layer(self, index: int, features: th.Tensor) -> th.Tensor:
-        linear_features = self.value_linear_layer[index](features)
-        features = self.value_activation_layer[index](linear_features) + features
-        features = self.value_norm_layer[index](features)
-        features = self.hidden_dropout(features)
-        return features
-
-    def forward_actor(self, features: th.Tensor) -> th.Tensor:
-        latent = self.policy_embedding_layer(features)
-        latent = self.input_dropout(latent)
-        for i in range(len(self.policy_linear_layer)):
-            latent = self.forward_actor_one_layer(i, latent)
-        return latent
-
-    def forward_critic(self, features: th.Tensor) -> th.Tensor:
-        latent = self.value_embedding_layer(features)
-        latent = self.input_dropout(latent)
-        for i in range(len(self.value_linear_layer)):
-            latent = self.forward_critic_one_layer(i, latent)
-        return latent
-
-    def update_device(self, device):
-        self.device = device
-        for i in range(len(self.policy_linear_layer)):
-            self.policy_linear_layer[i].to(device)
-            self.policy_norm_layer[i].to(device)
-
-        for i in range(len(self.value_linear_layer)):
-            self.value_linear_layer[i].to(device)
-            self.value_norm_layer[i].to(device)
-
-
 class CombinedExtractor(BaseFeaturesExtractor):
     """
     Combined feature extractor for Dict observation spaces.
@@ -464,68 +341,33 @@ class HybridNatureCNN(BaseFeaturesExtractor):
         self.physical_len = th.as_tensor(observation_space.shape) - self.cube_len
         self.n_input_channels = 1
 
-        self.conv1 = nn.Conv3d(self.n_input_channels, 32, kernel_size=(3, 3, 3), stride=(1, 1, 1))
-        self.normalization1 = nn.BatchNorm3d(32)
-        self.pool1 = nn.MaxPool3d(kernel_size=(1, 2, 2), stride=(1, 2, 2))
-        self.drop1 = nn.Dropout(0.2)
-
-        self.conv2 = nn.Conv3d(32, 64, kernel_size=(3, 3, 3), stride=(1, 1, 1))
-        self.normalization2 = nn.BatchNorm3d(64)
-        self.pool2 = nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2))
-        self.drop2 = nn.Dropout(0.5)
-
-        self.conv3 = nn.Conv3d(64, 64, kernel_size=(3, 3, 2), stride=(1, 1, 1))
-        self.normalization3 = nn.BatchNorm3d(64)
-        self.pool3 = nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2), padding=(0, 1, 1))
-        self.drop3 = nn.Dropout(0.5)
+        self.cnn = nn.Sequential(
+            nn.Conv3d(self.n_input_channels, 32, kernel_size=(3, 3, 3), stride=(1, 1, 1)),
+            nn.ReLU(),
+            nn.MaxPool3d(kernel_size=(1, 2, 2), stride=(1, 2, 2)),
+            nn.Conv3d(32, 64, kernel_size=(3, 3, 3), stride=(1, 1, 1)),
+            nn.ReLU(),
+            nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2)),
+            nn.Conv3d(64, 64, kernel_size=(3, 3, 2), stride=(1, 1, 1)),
+            nn.ReLU(),
+            nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2), padding=(0, 1, 1)),
+            nn.Flatten(),
+        )
 
         # Compute shape by doing one forward pass
         with th.no_grad():
             samples = observation_space.sample()[: self.cube_len].reshape([-1, self.n_input_channels] + self.cube_shape)
-            latent = th.as_tensor(samples)
-            latent = self.drop1(self.pool1(self.normalization1(self.conv1(latent))))
-            latent = self.drop2(self.pool2(self.normalization2(self.conv2(latent))))
-            latent = self.drop3(self.pool3(self.normalization3(self.conv3(latent))))
-            n_flatten = latent.flatten().shape[0]
+            n_flatten = self.cnn(th.as_tensor(samples)).shape[1]
 
         self.linear = nn.Sequential(nn.Linear(n_flatten, features_dim), nn.ReLU())
 
     def forward(self, observations: th.Tensor) -> th.Tensor:
-        batch_size = observations.shape[0]
         cube_latent = th.reshape(observations[:, :self.cube_len], shape=[-1, self.n_input_channels] + self.cube_shape)
-
-        cube_latent = self.drop1(self.pool1(F.relu(self.normalization1(self.conv1(cube_latent)))))
-        cube_latent = self.drop2(self.pool2(F.relu(self.normalization2(self.conv2(cube_latent)))))
-        cube_latent = self.drop3(self.pool3(F.relu(self.normalization3(self.conv3(cube_latent)))))
-        cube_latent = self.linear(cube_latent.view(batch_size, -1))
+        cube_latent = self.linear(self.cnn(cube_latent))
 
         physical_latent = observations[:, self.cube_len:]
         latent = th.cat([cube_latent, physical_latent], -1)
         return latent
-
-
-# DIY
-class NaiveExtractor(BaseFeaturesExtractor):
-    def __init__(self, observation_space: gym.spaces.Dict):
-        super(NaiveExtractor, self).__init__(observation_space, features_dim=1)
-
-        extractors = {}
-
-        total_concat_size = 0
-        for key, subspace in observation_space.spaces.items():
-            extractors[key] = nn.Flatten()
-            total_concat_size += get_flattened_obs_dim(subspace)
-
-        self.extractors = nn.ModuleDict(extractors)
-        # Update the features dim manually
-        self._features_dim = total_concat_size
-
-    def forward(self, observations: TensorDict) -> th.Tensor:
-        encoded_tensor_list = []
-
-        for key, extractor in self.extractors.items():
-            encoded_tensor_list.append(extractor(observations[key]))
-        return th.cat(encoded_tensor_list, dim=1)
 
 
 def get_actor_critic_arch(net_arch: Union[List[int], Dict[str, List[int]]]) -> Tuple[List[int], List[int]]:
@@ -566,3 +408,91 @@ def get_actor_critic_arch(net_arch: Union[List[int], Dict[str, List[int]]]) -> T
         assert "qf" in net_arch, "Error: no key 'qf' was provided in net_arch for the critic network"
         actor_arch, critic_arch = net_arch["pi"], net_arch["qf"]
     return actor_arch, critic_arch
+
+
+class ENet(nn.Module):
+    def __init__(self, device='cuda') -> None:
+        super().__init__()
+
+        self.device = device
+        self.cube_shape = [25, 35, 17]
+        self.cube_len = th.prod(th.as_tensor(self.cube_shape).to(self.device))
+        self.n_input_channels = 1
+        self.cube_latent_dim = 768
+        self.physical_dim = 25 + 3 + 3
+        self.embedding_dim = 64
+        self.n_input_channels = 1
+
+        self.cnn = nn.Sequential(
+            nn.Conv3d(self.n_input_channels, 32, kernel_size=(3, 3, 3), stride=(1, 1, 1)),
+            nn.BatchNorm3d(32),
+            nn.ReLU(),
+            nn.MaxPool3d(kernel_size=(1, 2, 2), stride=(1, 2, 2)),
+            nn.Dropout(0.2),
+
+            nn.Conv3d(32, 64, kernel_size=(3, 3, 3), stride=(1, 1, 1)),
+            nn.BatchNorm3d(64),
+            nn.ReLU(),
+            nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2)),
+            nn.Dropout(0.5),
+
+            nn.Conv3d(64, 64, kernel_size=(3, 3, 2), stride=(1, 1, 1)),
+            nn.BatchNorm3d(64),
+            nn.ReLU(),
+            nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2), padding=(0, 1, 1)),
+            nn.Dropout(0.5),
+
+            nn.Flatten(),
+        )
+
+        self.cnn_linear = nn.Sequential(
+            nn.Linear(self.cube_latent_dim, self.embedding_dim),
+            nn.ReLU()
+        )
+        self.physical_linear = nn.Sequential(
+            nn.Linear(self.physical_dim, self.embedding_dim),
+            nn.ReLU()
+        )
+
+        input_dim = 2 * self.embedding_dim
+        self.fc = nn.Sequential(
+            nn.Linear(input_dim, 64),
+            nn.ReLU(),
+            nn.Linear(64, 64),
+            nn.ReLU(),
+            nn.Linear(64, 1),
+            nn.Sigmoid()
+        )
+
+    def cnn_forward(self, observations: th.Tensor):
+        if len(observations.shape) == 1:
+            observations = observations[None, :]
+        cube_latent = th.reshape(observations[:, :self.cube_len], shape=[-1, self.n_input_channels] + self.cube_shape)
+        cube_latent = self.cnn(cube_latent)
+        cube_latent = self.cnn_linear(cube_latent)
+        physical_latent = observations[:, self.cube_len:]
+
+        return cube_latent, physical_latent
+
+    def forward(self, observation: dict) -> th.Tensor:
+        tensor_list = []
+        # sorted ensure order: achieved_goal -> desired_goal -> observation
+        for key, sub_observation in sorted(observation.items()):
+            sub_observation = th.as_tensor(sub_observation, dtype=th.float).to(self.device)
+            if len(sub_observation.shape) == 1:
+                sub_observation = sub_observation[None, :]
+
+            if key == 'observation':
+                cube_latent, physical_latent = self.cnn_forward(sub_observation)
+                tensor_list.extend([physical_latent, cube_latent])
+            else:
+                tensor_list.append(sub_observation)
+
+        tensor = th.cat(tensor_list, dim=-1)
+
+        physical_latent = self.physical_linear(tensor[:, :-self.embedding_dim])
+        cube_latent = tensor[:, -self.embedding_dim:]
+        latent = th.cat((physical_latent, cube_latent), dim=-1)
+        latent = self.fc(latent)
+
+        return latent

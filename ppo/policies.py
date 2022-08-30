@@ -5,7 +5,6 @@ from stable_baselines3.common.policies import (
     ActorCriticPolicy,
     MultiInputActorCriticPolicy,
     HybridPolicy,
-    NaivePolicy,
     register_policy,
 )
 
@@ -19,4 +18,3 @@ register_policy("MultiInputPolicy", MultiInputPolicy)
 
 # DIY
 register_policy("HybridPolicy", HybridPolicy)
-register_policy("NaivePolicy", NaivePolicy)

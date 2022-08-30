@@ -8,7 +8,7 @@ from gym import spaces
 from torch.nn import functional as F
 
 from stable_baselines3.common.on_policy_algorithm import OnPolicyAlgorithm, HybridOnPolicyAlgorithm
-from stable_baselines3.common.policies import ActorCriticPolicy, HybridPolicy, NaivePolicy
+from stable_baselines3.common.policies import ActorCriticPolicy, HybridPolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import explained_variance, get_schedule_fn
 
@@ -67,7 +67,7 @@ class PPO(OnPolicyAlgorithm):
 
     def __init__(
             self,
-            policy: Union[str, Union[Type[ActorCriticPolicy], Type[HybridPolicy], Type[NaivePolicy]]],
+            policy: Union[str, Union[Type[ActorCriticPolicy], Type[HybridPolicy]]],
             env: Union[GymEnv, str],
             learning_rate: Union[float, Schedule] = 3e-4,
             n_steps: int = 2048,
@@ -148,9 +148,6 @@ class PPO(OnPolicyAlgorithm):
         self.clip_range = clip_range
         self.clip_range_vf = clip_range_vf
         self.target_kl = target_kl
-
-        # DIY
-        self.success_rate_threshold = 0.7
 
         if _init_setup_model:
             self._setup_model()
@@ -329,7 +326,7 @@ from collections import deque
 class HybridPPO(HybridOnPolicyAlgorithm):
     def __init__(
             self,
-            policy: Union[str, Union[Type[ActorCriticPolicy], Type[HybridPolicy], Type[NaivePolicy]]],
+            policy: Union[str, Union[Type[ActorCriticPolicy], Type[HybridPolicy]]],
             env: Union[GymEnv, str],
             learning_rate: Union[float, Schedule] = 3e-4,
             n_steps: int = 2048,
@@ -427,8 +424,6 @@ class HybridPPO(HybridOnPolicyAlgorithm):
 
     def _setup_model(self) -> None:
         super(HybridPPO, self)._setup_model()
-        if isinstance(self.policy, HybridPolicy) and self.policy.use_transformer_mlp:
-            self.policy.mlp_extractor.update_device(self.device)
 
         # Initialize schedules for policy/value clipping
         self.clip_range = get_schedule_fn(self.clip_range)
@@ -540,14 +535,27 @@ class HybridPPO(HybridOnPolicyAlgorithm):
         if self.clip_range_vf is not None:
             self.logger.record(f"{prefix}train/clip_range_vf", clip_range_vf)
 
-    def train_estimate(self, prefix=None):
+    # ESTI
+    def train_estimate(self, estimate_net=None, estimate_optimizer=None, prefix=None):
+        assert estimate_net is not None
         assert self.is_two_stage_env
 
         self.policy.set_training_mode(True)
-        self._update_learning_rate(self.policy.optimizer)
+
+        self._update_learning_rate(estimate_optimizer)
 
         estimate_losses = []
         estimate_right_rates = []
+        valid_sample_counts = []
+        ENet_outputs = []
+        ENet_output_dict = {
+            'mean': 0,
+            '[0.0,0.2)': 0,
+            '[0.2,0.4)': 0,
+            '[0.4,0.6)': 0,
+            '[0.6,0.8)': 0,
+            '[0.8,1.0)': 0,
+        }
 
         min_loss = th.inf
         loss_remain_times = 0
@@ -556,18 +564,28 @@ class HybridPPO(HybridOnPolicyAlgorithm):
 
         for _ in range(self.n_epochs):
             for rollout_data in self.rollout_buffer.get(self.batch_size):
+
                 if loss_remain_times > buffer_size // self.batch_size:
                     continue_training = False
                     break
+
                 # Re-sample the noise matrix because the log_std has changed
                 if self.use_sde:
                     self.policy.reset_noise(self.batch_size)
 
-                success_rates_pred = self.policy.estimate_observations(rollout_data.observations).flatten()
+                is_successes        = rollout_data.is_successes
+                masks               = rollout_data.masks
+                less_label          = 0
 
-                masks = rollout_data.masks
-                loss = F.binary_cross_entropy(success_rates_pred, rollout_data.is_successes,
-                                              weight=masks, reduction='sum') / masks.sum()
+                balanced_masks = th.where(th.logical_and(masks, is_successes == less_label), masks, 0)
+                index = th.where(th.logical_and(masks, is_successes == 1 - less_label))[0]
+                random_index_of_index = th.randperm(index.shape[0])[: th.logical_and(masks, is_successes == less_label).sum().int()]
+                balanced_masks[index[random_index_of_index]] = 1
+
+                success_rates_pred = estimate_net(rollout_data.observations).flatten()
+
+                loss = F.binary_cross_entropy(success_rates_pred, is_successes,
+                                              weight=balanced_masks, reduction='sum') / balanced_masks.sum()
                 loss_item = loss.item()
 
                 if loss_item < min_loss:
@@ -577,7 +595,7 @@ class HybridPPO(HybridOnPolicyAlgorithm):
                     loss_remain_times += 1
                 estimate_losses.append(loss_item)
 
-                is_successes_indicate = rollout_data.is_successes.long()
+                is_successes_indicate = is_successes.long()
                 cuda_success_rate_threshold = th.as_tensor(self.success_rate_threshold).to(self.device)
                 pred_is_success_indicate = th.where(success_rates_pred <= cuda_success_rate_threshold,
                                                     success_rates_pred,
@@ -586,20 +604,46 @@ class HybridPPO(HybridOnPolicyAlgorithm):
                                                     pred_is_success_indicate,
                                                     th.as_tensor(0, dtype=th.float).to(self.device)).to(self.device)
 
-                estimate_right_rates.append((pred_is_success_indicate == is_successes_indicate)
-                                            .float().mean().detach().cpu().numpy().item())
+                estimate_right_rates.append(((balanced_masks * (pred_is_success_indicate == is_successes_indicate).float()).sum() / balanced_masks.sum())
+                                            .detach().cpu().numpy().item())
 
-                self.policy.optimizer.zero_grad()
+                valid_sample_counts.append(balanced_masks.sum().detach().cpu().numpy().item())
+
+                output_ratio_list = []
+                step = 0.2
+                masked_success_rates_pred = success_rates_pred[balanced_masks.bool()]
+                for i in range(len(th.arange(0, 1, step))):
+                    output_ratio_list.append((th.logical_and(i * step <= masked_success_rates_pred, masked_success_rates_pred < (i + 1) * step).sum() / balanced_masks.sum()).detach().cpu().numpy().item())
+                mean = masked_success_rates_pred.mean().detach().cpu().numpy().item()
+
+                ENet_outputs.append(
+                    {
+                        'mean': mean,
+                        '[0.0,0.2)': output_ratio_list[0],
+                        '[0.2,0.4)': output_ratio_list[1],
+                        '[0.4,0.6)': output_ratio_list[2],
+                        '[0.6,0.8)': output_ratio_list[3],
+                        '[0.8,1.0)': output_ratio_list[4],
+                    }
+                )
+
+                estimate_optimizer.zero_grad()
                 loss.backward()
-                th.nn.utils.clip_grad_norm_(self.policy.estimate_net.parameters(), self.max_grad_norm)
-                self.policy.optimizer.step()
+
+                # ESTI
+                th.nn.utils.clip_grad_norm_(estimate_net.parameters(), self.max_grad_norm)
+                estimate_optimizer.step()
             if not continue_training:
                 break
 
         prefix = f'{prefix}' if prefix is not None else ''
 
         self.logger.record(f"{prefix}estimate/bce_loss", np.mean(estimate_losses))
+        self.logger.record(f"{prefix}estimate/valid_sample_count", np.mean(valid_sample_counts))
         self.logger.record(f"{prefix}estimate/right_rate", np.mean(estimate_right_rates))
+
+        for key in ENet_output_dict.keys():
+            self.logger.record(f"{prefix}estimate/{key}", np.mean([ENet_output[key] for ENet_output in ENet_outputs]))
 
     def learn_one_step(
             self,
@@ -712,11 +756,17 @@ class HybridPPO(HybridOnPolicyAlgorithm):
             accumulated_iteration: int = 0,
             accumulated_total_timesteps: int = 0,
             prefix: str = None,
+
+            # ESTI
+            estimate_net: th.nn.Module = None,
+            estimate_optimizer: th.optim = th.optim.Adam,
     ) -> "HybridPPO":
         total_timesteps, callback = self._setup_learn(
             total_timesteps, eval_env, callback, eval_freq, n_eval_episodes, eval_log_path, reset_num_timesteps,
             tb_log_name
         )
+
+        estimate_net.to(self.device)
 
         callback.on_training_start(locals(), globals())
 
@@ -767,13 +817,15 @@ class HybridPPO(HybridOnPolicyAlgorithm):
             if save_interval is not None and accumulated_iteration % save_interval == 0:
                 assert save_path is not None
                 accumulated_save_count += 1
-                self.save(save_path + "_" + str(accumulated_save_count))
+                # self.save(save_path + "_" + str(accumulated_save_count))
+                th.save(estimate_net.state_dict(), save_path + "_" + str(accumulated_save_count) + "_ENet")
                 self.logger.record(f"{prefix}Save Model", accumulated_save_count)
                 self.logger.record(f"{prefix}time/iterations", accumulated_iteration)
                 self.logger.record(f"{prefix}time/total_timesteps", accumulated_total_timesteps + self.num_timesteps)
                 self.logger.dump(step=accumulated_total_timesteps + self.num_timesteps)
 
-            self.train_estimate(prefix=prefix)
+            # ESTI
+            self.train_estimate(estimate_net, estimate_optimizer, prefix=prefix)
 
         callback.on_training_end()
 
@@ -808,16 +860,18 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env.subproc_vec_env import SubprocVecEnv
 from stable_baselines3.common.vec_env.dummy_vec_env import DummyVecEnv
 from stable_baselines3.common.vec_env.vec_normalize import VecNormalize
+from stable_baselines3.common.torch_layers import ENet
+
 
 lower = 0
 upper = 1
 indicate_list = [lower, upper]
 
 
-def make_env(env_name, model_path=None):
+def make_env(env_name, ENet_path=None):
     def _thunk():
-        if model_path is not None:
-            env = gym.make(env_name, model_path=model_path)
+        if ENet_path is not None:
+            env = gym.make(env_name, ENet_path=ENet_path)
         else:
             env = gym.make(env_name)
         env = Monitor(env, None, allow_early_resets=True)
@@ -827,9 +881,9 @@ def make_env(env_name, model_path=None):
     return _thunk
 
 
-def env_wrapper(env_name, num_envs, model_path=None):
+def env_wrapper(env_name, num_envs, ENet_path=None):
     envs = [
-        make_env(env_name, model_path)
+        make_env(env_name, ENet_path)
         for _ in range(num_envs)
     ]
 
@@ -847,21 +901,26 @@ class HrlPPO:
     def __init__(
             self,
 
-            lower_policy: Union[str, Union[Type[ActorCriticPolicy], Type[HybridPolicy], Type[NaivePolicy]]],
-            estimate_policy: Union[str, Union[Type[ActorCriticPolicy], Type[HybridPolicy], Type[NaivePolicy]]],
-            upper_policy: Union[str, Union[Type[ActorCriticPolicy], Type[HybridPolicy], Type[NaivePolicy]]],
+            lower_policy: Union[str, Union[Type[ActorCriticPolicy], Type[HybridPolicy]]],
+            estimate_policy: Union[str, Union[Type[ActorCriticPolicy], Type[HybridPolicy]]],
+            upper_policy: Union[str, Union[Type[ActorCriticPolicy], Type[HybridPolicy]]],
 
             lower_env: Union[GymEnv, str],
             estimate_env: Union[GymEnv, str],
             upper_env: Union[GymEnv, str],
 
-            upper_env_id: str,
+            lower_n_steps: int = 2048,
+            lower_batch_size: int = 128,
+
+            estimate_n_steps: int = 512,
+            estimate_batch_size: int = 512,
+
+            upper_env_id: str = 'PlanningEnv-v0',
             upper_env_num: int = 3,
             upper_n_steps: int = 256,
+            upper_batch_size: int = 128,
 
-            n_steps: int = 2048,
             learning_rate: Union[float, Schedule] = 3e-4,
-            batch_size: int = 64,
             n_epochs: int = 10,
             gamma: float = 0.99,
             gae_lambda: float = 0.95,
@@ -881,48 +940,57 @@ class HrlPPO:
             device: Union[th.device, str] = "auto",
             _init_setup_model: bool = True,
     ):
-        self.lower_agent = HybridPPO(lower_policy, lower_env, learning_rate, n_steps,
-                                     batch_size, n_epochs, gamma, gae_lambda, clip_range, clip_range_vf, ent_coef,
+        self.lower_agent = HybridPPO(lower_policy, lower_env, learning_rate, lower_n_steps,
+                                     lower_batch_size, n_epochs, gamma, gae_lambda, clip_range, clip_range_vf, ent_coef,
                                      vf_coef, max_grad_norm, use_sde, sde_sample_freq, target_kl, tensorboard_log,
                                      create_eval_env, policy_kwargs, verbose, seed, device, _init_setup_model,
                                      is_two_stage_env=True)
-        self.estimate_agent = HybridPPO(estimate_policy, estimate_env, learning_rate, n_steps,
-                                        batch_size, n_epochs, gamma, gae_lambda, clip_range, clip_range_vf, ent_coef,
+        self.estimate_agent = HybridPPO(estimate_policy, estimate_env, learning_rate, estimate_n_steps,
+                                        estimate_batch_size, n_epochs, gamma, gae_lambda, clip_range, clip_range_vf, ent_coef,
                                         vf_coef, max_grad_norm, use_sde, sde_sample_freq, target_kl, tensorboard_log,
                                         create_eval_env, policy_kwargs, verbose, seed, device, _init_setup_model,
                                         is_two_stage_env=True)
-        self.upper_agent = HybridPPO(upper_policy, upper_env, learning_rate, n_steps,
-                                     batch_size, n_epochs, gamma, gae_lambda, clip_range, clip_range_vf, ent_coef,
+        self.ENet = ENet()
+        self.upper_agent = HybridPPO(upper_policy, upper_env, learning_rate, upper_n_steps,
+                                     upper_batch_size, n_epochs, gamma, gae_lambda, clip_range, clip_range_vf, ent_coef,
                                      vf_coef, max_grad_norm, use_sde, sde_sample_freq, target_kl, tensorboard_log,
                                      create_eval_env, policy_kwargs, verbose, seed, device, _init_setup_model,
                                      is_two_stage_env=False)
 
         self.wrapped_estimate_env = estimate_env
+        self.estimate_n_steps = estimate_n_steps
+        self.estimate_batch_size = estimate_batch_size
+
         self.upper_policy = upper_policy
         self.upper_env_id = upper_env_id
         self.upper_env_num = upper_env_num
         self.upper_n_steps = upper_n_steps
-        self.upper_n_steps = upper_n_steps
+        self.upper_batch_size = upper_batch_size
 
         self.lr = learning_rate
         self.tensorboard_log = tensorboard_log
 
     def load_estimate(self, lower_model_path: str = None, logger=None):
         assert lower_model_path is not None and logger is not None, 'Model path and logger can not be None!!!'
+
         self.estimate_agent = HybridPPO.load(lower_model_path,
+                                             learning_rate=self.lr,
                                              env=self.wrapped_estimate_env,
                                              tensorboard_log=self.tensorboard_log,
+                                             n_steps=self.estimate_n_steps,
+                                             batch_size=self.estimate_batch_size,
                                              is_two_stage_env=True)
         self.estimate_agent.reset_rollout_buffer(self.wrapped_estimate_env)
         self.estimate_agent.set_logger(logger)
 
-    def load_upper(self, lower_model_path: str = None, logger=None):
-        assert lower_model_path is not None and logger is not None, 'Model path and logger can not be None!!!'
-        wrapped_upper_env = env_wrapper(self.upper_env_id, self.upper_env_num, lower_model_path)
+    def load_upper(self, ENet_path: str = None, logger=None):
+        assert ENet_path is not None and logger is not None, 'ENet path and logger can not be None!!!'
+        wrapped_upper_env = env_wrapper(self.upper_env_id, self.upper_env_num, ENet_path)
         self.upper_agent = HybridPPO(self.upper_policy,
                                      wrapped_upper_env,
                                      self.lr,
                                      self.upper_n_steps,
+                                     batch_size=self.upper_batch_size,
                                      verbose=1,
                                      tensorboard_log=self.tensorboard_log)
         self.upper_agent.set_logger(logger)
@@ -951,6 +1019,10 @@ class HrlPPO:
             train_lower_model_path: str = None,
             train_estimate_model_path: str = None,
             train_upper_model_path: str = None,
+
+            # ESTI
+            estimate_net=None,
+            estimate_optimizer=None,
     ):
         lower_save_count = save_count
         lower_iteration = 0
@@ -1053,15 +1125,20 @@ class HrlPPO:
                                                    accumulated_time_elapsed=estimate_time_elapsed,
                                                    accumulated_iteration=estimate_iteration,
                                                    accumulated_total_timesteps=estimate_total_timesteps,
-                                                   prefix='Estimate')
+                                                   prefix='Estimate',
+
+                                                   # ESTI
+                                                   estimate_net=estimate_net,
+                                                   estimate_optimizer=estimate_optimizer,
+                                                   )
                 estimate_save_count += train_estimate_iteration // estimate_save_interval
                 estimate_iteration += train_estimate_iteration
                 estimate_time_elapsed += time.time() - self.estimate_agent.start_time
                 estimate_total_timesteps += self.estimate_agent.num_timesteps
 
-                latest_estimate_model_path = f'{estimate_save_path}_{estimate_save_count}'
+                latest_estimate_model_path = f'{estimate_save_path}_{estimate_save_count}_ENet'
             else:
-                latest_estimate_model_path = train_estimate_model_path
+                latest_estimate_model_path = train_estimate_model_path + '_ENet'
 
             if not is_upper_model_provided:
                 self.load_upper(latest_estimate_model_path, self.upper_agent.logger)
@@ -1117,3 +1194,7 @@ class HrlPPO:
                     self.load_agent(agent_name_list[i], os.path.join(model_dir, model_path.replace(postfix, '')))
                     break
             assert isinstance(agent_list[i], HybridPPO), f'{agent_name_list[i]} agent load failed!'
+
+    def load_ENet(self, ENet_path: str = None):
+        assert ENet_path is not None, f'ENet path can not be None!'
+        self.ENet.load_state_dict(th.load(ENet_path))
