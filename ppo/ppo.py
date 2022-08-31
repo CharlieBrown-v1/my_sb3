@@ -535,8 +535,7 @@ class HybridPPO(HybridOnPolicyAlgorithm):
         if self.clip_range_vf is not None:
             self.logger.record(f"{prefix}train/clip_range_vf", clip_range_vf)
 
-    # ESTI
-    def train_estimate(self, estimate_net=None, estimate_optimizer=None, prefix=None):
+    def train_estimate(self, estimate_net=None, estimate_optimizer=None, prefix=None) -> np.ndarray:
         assert estimate_net is not None
         assert self.is_two_stage_env
 
@@ -604,8 +603,8 @@ class HybridPPO(HybridOnPolicyAlgorithm):
                                                     pred_is_success_indicate,
                                                     th.as_tensor(0, dtype=th.float).to(self.device)).to(self.device)
 
-                estimate_right_rates.append(((balanced_masks * (pred_is_success_indicate == is_successes_indicate).float()).sum() / balanced_masks.sum())
-                                            .detach().cpu().numpy().item())
+                estimate_right_rate = ((balanced_masks * (pred_is_success_indicate == is_successes_indicate).float()).sum() / balanced_masks.sum()).detach().cpu().numpy().item()
+                estimate_right_rates.append(estimate_right_rate)
 
                 valid_sample_counts.append(balanced_masks.sum().detach().cpu().numpy().item())
 
@@ -629,8 +628,6 @@ class HybridPPO(HybridOnPolicyAlgorithm):
 
                 estimate_optimizer.zero_grad()
                 loss.backward()
-
-                # ESTI
                 th.nn.utils.clip_grad_norm_(estimate_net.parameters(), self.max_grad_norm)
                 estimate_optimizer.step()
             if not continue_training:
@@ -640,10 +637,14 @@ class HybridPPO(HybridOnPolicyAlgorithm):
 
         self.logger.record(f"{prefix}estimate/bce_loss", np.mean(estimate_losses))
         self.logger.record(f"{prefix}estimate/valid_sample_count", np.mean(valid_sample_counts))
-        self.logger.record(f"{prefix}estimate/right_rate", np.mean(estimate_right_rates))
+
+        estimate_right_rate_mean = np.mean(estimate_right_rates)
+        self.logger.record(f"{prefix}estimate/right_rate", estimate_right_rate_mean)
 
         for key in ENet_output_dict.keys():
             self.logger.record(f"{prefix}estimate/{key}", np.mean([ENet_output[key] for ENet_output in ENet_outputs]))
+
+        return estimate_right_rate_mean
 
     def learn_one_step(
             self,
@@ -756,11 +757,9 @@ class HybridPPO(HybridOnPolicyAlgorithm):
             accumulated_iteration: int = 0,
             accumulated_total_timesteps: int = 0,
             prefix: str = None,
-
-            # ESTI
             estimate_net: th.nn.Module = None,
             estimate_optimizer: th.optim = th.optim.Adam,
-    ) -> "HybridPPO":
+    ) -> int:
         total_timesteps, callback = self._setup_learn(
             total_timesteps, eval_env, callback, eval_freq, n_eval_episodes, eval_log_path, reset_num_timesteps,
             tb_log_name
@@ -771,6 +770,9 @@ class HybridPPO(HybridOnPolicyAlgorithm):
         callback.on_training_start(locals(), globals())
 
         prefix = f'{prefix} ' if prefix is not None else ''
+
+        max_estimate_right_rate = -np.inf
+        max_estimate_right_rate_iteration = None
 
         while self.num_timesteps < total_timesteps:
 
@@ -823,13 +825,16 @@ class HybridPPO(HybridOnPolicyAlgorithm):
                 self.logger.record(f"{prefix}time/iterations", accumulated_iteration)
                 self.logger.record(f"{prefix}time/total_timesteps", accumulated_total_timesteps + self.num_timesteps)
                 self.logger.dump(step=accumulated_total_timesteps + self.num_timesteps)
+            estimate_right_rate = self.train_estimate(estimate_net, estimate_optimizer, prefix=prefix)
+            if estimate_right_rate > max_estimate_right_rate:
+                max_estimate_right_rate = estimate_right_rate.copy()
+                max_estimate_right_rate_iteration = accumulated_iteration
 
-            # ESTI
-            self.train_estimate(estimate_net, estimate_optimizer, prefix=prefix)
+        assert max_estimate_right_rate_iteration is not None
 
         callback.on_training_end()
 
-        return self
+        return max_estimate_right_rate_iteration
 
     def _two_stage_env_update_info_buffer(self, infos, dones):
         assert self.removal_success_buffer is not None and self.global_success_buffer is not None
@@ -1019,8 +1024,6 @@ class HrlPPO:
             train_lower_model_path: str = None,
             train_estimate_model_path: str = None,
             train_upper_model_path: str = None,
-
-            # ESTI
             estimate_net=None,
             estimate_optimizer=None,
     ):
@@ -1115,28 +1118,28 @@ class HrlPPO:
             if not is_estimate_model_provided:
                 self.load_estimate(latest_lower_model_path, self.estimate_agent.logger)
                 estimate_single_steps = self.estimate_agent.rollout_buffer.n_envs * self.estimate_agent.rollout_buffer.buffer_size
-                self.estimate_agent.learn_estimate(train_estimate_iteration * estimate_single_steps,
-                                                   estimate_callback, log_interval, eval_env, eval_freq,
-                                                   n_eval_episodes,
-                                                   f'Estimate', eval_log_path, reset_num_timesteps,
-                                                   estimate_save_interval,
-                                                   estimate_save_path,
-                                                   accumulated_save_count=estimate_save_count,
-                                                   accumulated_time_elapsed=estimate_time_elapsed,
-                                                   accumulated_iteration=estimate_iteration,
-                                                   accumulated_total_timesteps=estimate_total_timesteps,
-                                                   prefix='Estimate',
-
-                                                   # ESTI
-                                                   estimate_net=estimate_net,
-                                                   estimate_optimizer=estimate_optimizer,
-                                                   )
+                max_estimate_right_rate_iteration = \
+                    self.estimate_agent.learn_estimate(train_estimate_iteration * estimate_single_steps,
+                                                       estimate_callback, log_interval, eval_env, eval_freq,
+                                                       n_eval_episodes,
+                                                       f'Estimate', eval_log_path, reset_num_timesteps,
+                                                       estimate_save_interval,
+                                                       estimate_save_path,
+                                                       accumulated_save_count=estimate_save_count,
+                                                       accumulated_time_elapsed=estimate_time_elapsed,
+                                                       accumulated_iteration=estimate_iteration,
+                                                       accumulated_total_timesteps=estimate_total_timesteps,
+                                                       prefix='Estimate',
+                                                       estimate_net=estimate_net,
+                                                       estimate_optimizer=estimate_optimizer,
+                                                       )
+                print(f'iteration: {max_estimate_right_rate_iteration}')
                 estimate_save_count += train_estimate_iteration // estimate_save_interval
                 estimate_iteration += train_estimate_iteration
                 estimate_time_elapsed += time.time() - self.estimate_agent.start_time
                 estimate_total_timesteps += self.estimate_agent.num_timesteps
 
-                latest_estimate_model_path = f'{estimate_save_path}_{estimate_save_count}_ENet'
+                latest_estimate_model_path = f'{estimate_save_path}_{max_estimate_right_rate_iteration}_ENet'
             else:
                 latest_estimate_model_path = train_estimate_model_path + '_ENet'
 
