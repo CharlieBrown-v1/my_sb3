@@ -603,8 +603,8 @@ class HybridPPO(HybridOnPolicyAlgorithm):
                                                     pred_is_success_indicate,
                                                     th.as_tensor(0, dtype=th.float).to(self.device)).to(self.device)
 
-                estimate_right_rate = ((balanced_masks * (pred_is_success_indicate == is_successes_indicate).float()).sum() / balanced_masks.sum()).detach().cpu().numpy().item()
-                estimate_right_rates.append(estimate_right_rate)
+                estimate_right_rates.append(((balanced_masks * (pred_is_success_indicate == is_successes_indicate).float()).sum() / balanced_masks.sum())
+                                            .detach().cpu().numpy().item())
 
                 valid_sample_counts.append(balanced_masks.sum().detach().cpu().numpy().item())
 
@@ -638,13 +638,13 @@ class HybridPPO(HybridOnPolicyAlgorithm):
         self.logger.record(f"{prefix}estimate/bce_loss", np.mean(estimate_losses))
         self.logger.record(f"{prefix}estimate/valid_sample_count", np.mean(valid_sample_counts))
 
-        estimate_right_rate_mean = np.mean(estimate_right_rates)
-        self.logger.record(f"{prefix}estimate/right_rate", estimate_right_rate_mean)
+        estimate_success_rate_mean = np.mean(estimate_right_rates)
+        self.logger.record(f"{prefix}estimate/right_rate", estimate_success_rate_mean)
 
         for key in ENet_output_dict.keys():
             self.logger.record(f"{prefix}estimate/{key}", np.mean([ENet_output[key] for ENet_output in ENet_outputs]))
 
-        return estimate_right_rate_mean
+        return estimate_success_rate_mean
 
     def learn_one_step(
             self,
@@ -771,8 +771,8 @@ class HybridPPO(HybridOnPolicyAlgorithm):
 
         prefix = f'{prefix} ' if prefix is not None else ''
 
-        max_estimate_right_rate = -np.inf
-        max_estimate_right_rate_iteration = None
+        best_iter = None
+        max_estimate_success_rate = -th.inf
 
         while self.num_timesteps < total_timesteps:
 
@@ -825,16 +825,17 @@ class HybridPPO(HybridOnPolicyAlgorithm):
                 self.logger.record(f"{prefix}time/iterations", accumulated_iteration)
                 self.logger.record(f"{prefix}time/total_timesteps", accumulated_total_timesteps + self.num_timesteps)
                 self.logger.dump(step=accumulated_total_timesteps + self.num_timesteps)
-            estimate_right_rate = self.train_estimate(estimate_net, estimate_optimizer, prefix=prefix)
-            if estimate_right_rate > max_estimate_right_rate:
-                max_estimate_right_rate = estimate_right_rate.copy()
-                max_estimate_right_rate_iteration = accumulated_iteration
 
-        assert max_estimate_right_rate_iteration is not None
+            estimate_success_rate = self.train_estimate(estimate_net, estimate_optimizer, prefix=prefix)
+            if estimate_success_rate > max_estimate_success_rate:
+                max_estimate_success_rate = estimate_success_rate
+                best_iter = accumulated_iteration
 
         callback.on_training_end()
 
-        return max_estimate_right_rate_iteration
+        assert best_iter is not None
+
+        return best_iter
 
     def _two_stage_env_update_info_buffer(self, infos, dones):
         assert self.removal_success_buffer is not None and self.global_success_buffer is not None
@@ -873,9 +874,11 @@ upper = 1
 indicate_list = [lower, upper]
 
 
-def make_env(env_name, ENet_path=None):
+def make_env(env_name, agent_path=None, ENet_path=None):
     def _thunk():
-        if ENet_path is not None:
+        if agent_path is not None and ENet_path is not None:
+            env = gym.make(env_name, agent_path=agent_path, ENet_path=ENet_path)
+        elif ENet_path is not None:
             env = gym.make(env_name, ENet_path=ENet_path)
         else:
             env = gym.make(env_name)
@@ -886,9 +889,9 @@ def make_env(env_name, ENet_path=None):
     return _thunk
 
 
-def env_wrapper(env_name, num_envs, ENet_path=None):
+def env_wrapper(env_name, num_envs, agent_path=None, ENet_path=None):
     envs = [
-        make_env(env_name, ENet_path)
+        make_env(env_name, agent_path=agent_path, ENet_path=ENet_path)
         for _ in range(num_envs)
     ]
 
@@ -988,9 +991,12 @@ class HrlPPO:
         self.estimate_agent.reset_rollout_buffer(self.wrapped_estimate_env)
         self.estimate_agent.set_logger(logger)
 
-    def load_upper(self, ENet_path: str = None, logger=None):
+    def load_upper(self, agent_path: str = None, ENet_path: str = None, logger=None):
         assert ENet_path is not None and logger is not None, 'ENet path and logger can not be None!!!'
-        wrapped_upper_env = env_wrapper(self.upper_env_id, self.upper_env_num, ENet_path)
+        if self.upper_env_id in ['PlanningC-v0', 'PlanningD-v0']:
+            wrapped_upper_env = env_wrapper(self.upper_env_id, self.upper_env_num, ENet_path=ENet_path)
+        else:
+            wrapped_upper_env = env_wrapper(self.upper_env_id, self.upper_env_num, agent_path=agent_path, ENet_path=ENet_path)
         self.upper_agent = HybridPPO(self.upper_policy,
                                      wrapped_upper_env,
                                      self.lr,
@@ -1116,35 +1122,35 @@ class HrlPPO:
                 latest_lower_model_path = train_lower_model_path
 
             if not is_estimate_model_provided:
-                self.load_estimate(latest_lower_model_path, self.estimate_agent.logger)
+                self.load_estimate(lower_model_path=latest_lower_model_path, logger=self.estimate_agent.logger)
                 estimate_single_steps = self.estimate_agent.rollout_buffer.n_envs * self.estimate_agent.rollout_buffer.buffer_size
-                max_estimate_right_rate_iteration = \
-                    self.estimate_agent.learn_estimate(train_estimate_iteration * estimate_single_steps,
-                                                       estimate_callback, log_interval, eval_env, eval_freq,
-                                                       n_eval_episodes,
-                                                       f'Estimate', eval_log_path, reset_num_timesteps,
-                                                       estimate_save_interval,
-                                                       estimate_save_path,
-                                                       accumulated_save_count=estimate_save_count,
-                                                       accumulated_time_elapsed=estimate_time_elapsed,
-                                                       accumulated_iteration=estimate_iteration,
-                                                       accumulated_total_timesteps=estimate_total_timesteps,
-                                                       prefix='Estimate',
-                                                       estimate_net=estimate_net,
-                                                       estimate_optimizer=estimate_optimizer,
-                                                       )
-                print(f'iteration: {max_estimate_right_rate_iteration}')
+                best_iter = self.estimate_agent.learn_estimate(train_estimate_iteration * estimate_single_steps,
+                                                   estimate_callback, log_interval, eval_env, eval_freq,
+                                                   n_eval_episodes,
+                                                   f'Estimate', eval_log_path, reset_num_timesteps,
+                                                   estimate_save_interval,
+                                                   estimate_save_path,
+                                                   accumulated_save_count=estimate_save_count,
+                                                   accumulated_time_elapsed=estimate_time_elapsed,
+                                                   accumulated_iteration=estimate_iteration,
+                                                   accumulated_total_timesteps=estimate_total_timesteps,
+                                                   prefix='Estimate',
+                                                   estimate_net=estimate_net,
+                                                   estimate_optimizer=estimate_optimizer,
+                                                   )
                 estimate_save_count += train_estimate_iteration // estimate_save_interval
                 estimate_iteration += train_estimate_iteration
                 estimate_time_elapsed += time.time() - self.estimate_agent.start_time
                 estimate_total_timesteps += self.estimate_agent.num_timesteps
 
-                latest_estimate_model_path = f'{estimate_save_path}_{max_estimate_right_rate_iteration}_ENet'
+                latest_estimate_model_path = f'{estimate_save_path}_{estimate_save_count}'
+                latest_estimate_ENet_path = f'{estimate_save_path}_{best_iter}_ENet'
             else:
-                latest_estimate_model_path = train_estimate_model_path + '_ENet'
+                latest_estimate_model_path = train_estimate_model_path
+                latest_estimate_ENet_path = train_estimate_model_path + '_ENet'
 
             if not is_upper_model_provided:
-                self.load_upper(latest_estimate_model_path, self.upper_agent.logger)
+                self.load_upper(agent_path=latest_estimate_model_path, ENet_path=latest_estimate_ENet_path, logger=self.upper_agent.logger)
                 upper_single_steps = self.upper_agent.rollout_buffer.n_envs * self.upper_agent.rollout_buffer.buffer_size
                 self.upper_agent.learn_one_step(train_upper_iteration * upper_single_steps,
                                                 callback, log_interval, eval_env, eval_freq, n_eval_episodes, f'Upper',
