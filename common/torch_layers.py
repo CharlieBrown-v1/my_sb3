@@ -2,6 +2,7 @@ from itertools import zip_longest
 from typing import Dict, List, Tuple, Type, Union
 
 import gym
+import numpy as np
 import torch as th
 from torch import nn
 
@@ -289,84 +290,79 @@ class HybridExtractor(BaseFeaturesExtractor):
 
     def __init__(self, observation_space: gym.spaces.Dict,
                  cube_shape: list = None,
-                 cube_extractor_cls: str = 'CNN',
-                 output_dim: int = 64):
+                 ):
         # TODO we do not know features-dim here before going over all the items, so put something there. This is dirty!
         super(HybridExtractor, self).__init__(observation_space, features_dim=1)
 
-        extractors = {}
-
-        total_concat_size = 0
-        for key, subspace in observation_space.spaces.items():
-            if cube_shape is not None and key == 'observation':
-                if cube_extractor_cls == 'CNN':
-                    extractors[key] = HybridNatureCNN(subspace, cube_shape=cube_shape, features_dim=output_dim)
-                else:
-                    raise NotImplementedError
-
-                total_concat_size += output_dim + extractors[key].physical_len
-            else:
-                # The observation key is a vector, flatten it if needed
-                extractors[key] = nn.Flatten()
-                total_concat_size += get_flattened_obs_dim(subspace)
-
-        self.extractors = nn.ModuleDict(extractors)
-        # Update the features dim manually
-        self._features_dim = total_concat_size
-
-    def forward(self, observations: TensorDict) -> th.Tensor:
-        encoded_tensor_list = []
-
-        for key, extractor in self.extractors.items():
-            encoded_tensor_list.append(extractor(observations[key]))
-        return th.cat(encoded_tensor_list, dim=1)
-
-
-# DIY
-class HybridNatureCNN(BaseFeaturesExtractor):
-    """
-        Adjustment CNN from DQN nature paper to fit ServerBotEnv:
-        :param observation_space:
-        :param features_dim: Number of features extracted.
-        This corresponds to the number of unit for the last layer.
-    """
-
-    def __init__(self, observation_space: gym.spaces.Box, cube_shape: list = None, features_dim: int = 64):
-        super(HybridNatureCNN, self).__init__(observation_space, features_dim)
-        # We assume CxLxWxH cubes
-        # Re-ordering will be done by pre-preprocessing or wrapper
-
-        self.cube_shape = cube_shape.copy()
-        self.cube_len = th.prod(th.as_tensor(cube_shape), dtype=th.int)
-        self.physical_len = th.as_tensor(observation_space.shape) - self.cube_len
+        self.cube_shape = cube_shape
+        self.cube_len = np.prod(cube_shape)
+        self.physical_dim = (3 + 8 * 3) + (4 * 3)  # joint + target
+        self.embedding_dim = 64
         self.n_input_channels = 1
 
         self.cnn = nn.Sequential(
             nn.Conv3d(self.n_input_channels, 32, kernel_size=(3, 3, 3), stride=(1, 1, 1)),
+            nn.BatchNorm3d(32),
             nn.ReLU(),
             nn.MaxPool3d(kernel_size=(1, 2, 2), stride=(1, 2, 2)),
+
             nn.Conv3d(32, 64, kernel_size=(3, 3, 3), stride=(1, 1, 1)),
+            nn.BatchNorm3d(64),
             nn.ReLU(),
             nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2)),
-            nn.Conv3d(64, 64, kernel_size=(3, 3, 2), stride=(1, 1, 1)),
+
+            nn.Conv3d(64, 64, kernel_size=(3, 3, 3), stride=(1, 1, 1)),
+            nn.BatchNorm3d(64),
             nn.ReLU(),
             nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2), padding=(0, 1, 1)),
+
             nn.Flatten(),
         )
 
         # Compute shape by doing one forward pass
         with th.no_grad():
-            samples = observation_space.sample()[: self.cube_len].reshape([-1, self.n_input_channels] + self.cube_shape)
-            n_flatten = self.cnn(th.as_tensor(samples)).shape[1]
+            cube_latent_dim = self.cnn(th.as_tensor(observation_space.sample()[None]).float()).shape[1]
 
-        self.linear = nn.Sequential(nn.Linear(n_flatten, features_dim), nn.ReLU())
+        self.cnn_linear = nn.Sequential(
+            nn.Linear(cube_latent_dim, self.embedding_dim),
+            nn.ReLU()
+        )
+        self.physical_linear = nn.Sequential(
+            nn.Linear(self.physical_dim, self.embedding_dim),
+            nn.ReLU()
+        )
+        self._features_dim = 2 * self.embedding_dim
 
-    def forward(self, observations: th.Tensor) -> th.Tensor:
+    def cnn_forward(self, observations: th.Tensor):
+        if len(observations.shape) == 1:
+            observations = observations[None, :]
         cube_latent = th.reshape(observations[:, :self.cube_len], shape=[-1, self.n_input_channels] + self.cube_shape)
-        cube_latent = self.linear(self.cnn(cube_latent))
-
+        cube_latent = self.cnn(cube_latent)
+        cube_latent = self.cnn_linear(cube_latent)
         physical_latent = observations[:, self.cube_len:]
-        latent = th.cat([cube_latent, physical_latent], -1)
+
+        return cube_latent, physical_latent
+
+    def forward(self, observation: dict) -> th.Tensor:
+        tensor_list = []
+        # sorted ensure order: achieved_goal -> desired_goal -> observation
+        for key, sub_observation in sorted(observation.items()):
+            sub_observation = th.as_tensor(sub_observation, dtype=th.float).to(self.device)
+            if len(sub_observation.shape) == 1:
+                sub_observation = sub_observation[None, :]
+
+            if key == 'observation':
+                cube_latent, physical_latent = self.cnn_forward(sub_observation)
+                tensor_list.extend([physical_latent, cube_latent])
+            else:
+                tensor_list.append(sub_observation)
+
+        tensor = th.cat(tensor_list, dim=-1)
+
+        physical_latent = self.physical_linear(tensor[:, :-self.embedding_dim])
+        cube_latent = tensor[:, -self.embedding_dim:]
+        latent = th.cat((physical_latent, cube_latent), dim=-1)
+
         return latent
 
 
@@ -408,88 +404,3 @@ def get_actor_critic_arch(net_arch: Union[List[int], Dict[str, List[int]]]) -> T
         assert "qf" in net_arch, "Error: no key 'qf' was provided in net_arch for the critic network"
         actor_arch, critic_arch = net_arch["pi"], net_arch["qf"]
     return actor_arch, critic_arch
-
-
-class ENet(nn.Module):
-    def __init__(self, device='cuda') -> None:
-        super().__init__()
-
-        self.device = device
-        self.cube_shape = [25, 35, 17]
-        self.cube_len = th.prod(th.as_tensor(self.cube_shape).to(self.device))
-        self.n_input_channels = 1
-        self.cube_latent_dim = 768
-        self.physical_dim = 25 + 3 + 3
-        self.embedding_dim = 64
-        self.n_input_channels = 1
-
-        self.cnn = nn.Sequential(
-            nn.Conv3d(self.n_input_channels, 32, kernel_size=(3, 3, 3), stride=(1, 1, 1)),
-            nn.BatchNorm3d(32),
-            nn.ReLU(),
-            nn.MaxPool3d(kernel_size=(1, 2, 2), stride=(1, 2, 2)),
-
-            nn.Conv3d(32, 64, kernel_size=(3, 3, 3), stride=(1, 1, 1)),
-            nn.BatchNorm3d(64),
-            nn.ReLU(),
-            nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2)),
-
-            nn.Conv3d(64, 64, kernel_size=(3, 3, 2), stride=(1, 1, 1)),
-            nn.BatchNorm3d(64),
-            nn.ReLU(),
-            nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2), padding=(0, 1, 1)),
-
-            nn.Flatten(),
-        )
-
-        self.cnn_linear = nn.Sequential(
-            nn.Linear(self.cube_latent_dim, self.embedding_dim),
-            nn.ReLU()
-        )
-        self.physical_linear = nn.Sequential(
-            nn.Linear(self.physical_dim, self.embedding_dim),
-            nn.ReLU()
-        )
-
-        input_dim = 2 * self.embedding_dim
-        self.fc = nn.Sequential(
-            nn.Linear(input_dim, 64),
-            nn.ReLU(),
-            nn.Linear(64, 64),
-            nn.ReLU(),
-            nn.Linear(64, 1),
-            nn.Sigmoid()
-        )
-
-    def cnn_forward(self, observations: th.Tensor):
-        if len(observations.shape) == 1:
-            observations = observations[None, :]
-        cube_latent = th.reshape(observations[:, :self.cube_len], shape=[-1, self.n_input_channels] + self.cube_shape)
-        cube_latent = self.cnn(cube_latent)
-        cube_latent = self.cnn_linear(cube_latent)
-        physical_latent = observations[:, self.cube_len:]
-
-        return cube_latent, physical_latent
-
-    def forward(self, observation: dict) -> th.Tensor:
-        tensor_list = []
-        # sorted ensure order: achieved_goal -> desired_goal -> observation
-        for key, sub_observation in sorted(observation.items()):
-            sub_observation = th.as_tensor(sub_observation, dtype=th.float).to(self.device)
-            if len(sub_observation.shape) == 1:
-                sub_observation = sub_observation[None, :]
-
-            if key == 'observation':
-                cube_latent, physical_latent = self.cnn_forward(sub_observation)
-                tensor_list.extend([physical_latent, cube_latent])
-            else:
-                tensor_list.append(sub_observation)
-
-        tensor = th.cat(tensor_list, dim=-1)
-
-        physical_latent = self.physical_linear(tensor[:, :-self.embedding_dim])
-        cube_latent = tensor[:, -self.embedding_dim:]
-        latent = th.cat((physical_latent, cube_latent), dim=-1)
-        latent = self.fc(latent)
-
-        return latent
