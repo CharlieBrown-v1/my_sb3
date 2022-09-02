@@ -535,117 +535,6 @@ class HybridPPO(HybridOnPolicyAlgorithm):
         if self.clip_range_vf is not None:
             self.logger.record(f"{prefix}train/clip_range_vf", clip_range_vf)
 
-    def train_estimate(self, estimate_net=None, estimate_optimizer=None, prefix=None) -> np.ndarray:
-        assert estimate_net is not None
-        assert self.is_two_stage_env
-
-        self.policy.set_training_mode(True)
-
-        self._update_learning_rate(estimate_optimizer)
-
-        estimate_losses = []
-        estimate_right_rates = []
-        valid_sample_counts = []
-        ENet_outputs = []
-        ENet_output_dict = {
-            'mean': 0,
-            '[0.0,0.2)': 0,
-            '[0.2,0.4)': 0,
-            '[0.4,0.6)': 0,
-            '[0.6,0.8)': 0,
-            '[0.8,1.0)': 0,
-        }
-
-        min_loss = th.inf
-        loss_remain_times = 0
-        buffer_size = self.env.num_envs * self.n_steps
-        continue_training = True
-
-        for _ in range(self.n_epochs):
-            for rollout_data in self.rollout_buffer.get(self.batch_size):
-
-                if loss_remain_times > buffer_size // self.batch_size:
-                    continue_training = False
-                    break
-
-                # Re-sample the noise matrix because the log_std has changed
-                if self.use_sde:
-                    self.policy.reset_noise(self.batch_size)
-
-                is_successes        = rollout_data.is_successes
-                masks               = rollout_data.masks
-                less_label          = 0
-
-                balanced_masks = th.where(th.logical_and(masks, is_successes == less_label), masks, 0)
-                index = th.where(th.logical_and(masks, is_successes == 1 - less_label))[0]
-                random_index_of_index = th.randperm(index.shape[0])[: th.logical_and(masks, is_successes == less_label).sum().int()]
-                balanced_masks[index[random_index_of_index]] = 1
-
-                success_rates_pred = estimate_net(rollout_data.observations).flatten()
-
-                loss = F.binary_cross_entropy(success_rates_pred, is_successes,
-                                              weight=balanced_masks, reduction='sum') / balanced_masks.sum()
-                loss_item = loss.item()
-
-                if loss_item < min_loss:
-                    min_loss = loss_item
-                    loss_remain_times = 0
-                else:
-                    loss_remain_times += 1
-                estimate_losses.append(loss_item)
-
-                is_successes_indicate = is_successes.long()
-                cuda_success_rate_threshold = th.as_tensor(self.success_rate_threshold).to(self.device)
-                pred_is_success_indicate = th.where(success_rates_pred <= cuda_success_rate_threshold,
-                                                    success_rates_pred,
-                                                    th.as_tensor(1, dtype=th.float).to(self.device)).to(self.device)
-                pred_is_success_indicate = th.where(success_rates_pred > cuda_success_rate_threshold,
-                                                    pred_is_success_indicate,
-                                                    th.as_tensor(0, dtype=th.float).to(self.device)).to(self.device)
-
-                estimate_right_rate = ((balanced_masks * (pred_is_success_indicate == is_successes_indicate).float()).sum() / balanced_masks.sum()).detach().cpu().numpy().item()
-                estimate_right_rates.append(estimate_right_rate)
-
-                valid_sample_counts.append(balanced_masks.sum().detach().cpu().numpy().item())
-
-                output_ratio_list = []
-                step = 0.2
-                masked_success_rates_pred = success_rates_pred[balanced_masks.bool()]
-                for i in range(len(th.arange(0, 1, step))):
-                    output_ratio_list.append((th.logical_and(i * step <= masked_success_rates_pred, masked_success_rates_pred < (i + 1) * step).sum() / balanced_masks.sum()).detach().cpu().numpy().item())
-                mean = masked_success_rates_pred.mean().detach().cpu().numpy().item()
-
-                ENet_outputs.append(
-                    {
-                        'mean': mean,
-                        '[0.0,0.2)': output_ratio_list[0],
-                        '[0.2,0.4)': output_ratio_list[1],
-                        '[0.4,0.6)': output_ratio_list[2],
-                        '[0.6,0.8)': output_ratio_list[3],
-                        '[0.8,1.0)': output_ratio_list[4],
-                    }
-                )
-
-                estimate_optimizer.zero_grad()
-                loss.backward()
-                th.nn.utils.clip_grad_norm_(estimate_net.parameters(), self.max_grad_norm)
-                estimate_optimizer.step()
-            if not continue_training:
-                break
-
-        prefix = f'{prefix}' if prefix is not None else ''
-
-        self.logger.record(f"{prefix}estimate/bce_loss", np.mean(estimate_losses))
-        self.logger.record(f"{prefix}estimate/valid_sample_count", np.mean(valid_sample_counts))
-
-        estimate_right_rate_mean = np.mean(estimate_right_rates)
-        self.logger.record(f"{prefix}estimate/right_rate", estimate_right_rate_mean)
-
-        for key in ENet_output_dict.keys():
-            self.logger.record(f"{prefix}estimate/{key}", np.mean([ENet_output[key] for ENet_output in ENet_outputs]))
-
-        return estimate_right_rate_mean
-
     def learn_one_step(
             self,
             total_timesteps: int,
@@ -739,103 +628,6 @@ class HybridPPO(HybridOnPolicyAlgorithm):
         )
         return total_timesteps, callback
 
-    def learn_estimate(
-            self,
-            total_timesteps: int,
-            callback: MaybeCallback = None,
-            log_interval: int = 1,
-            eval_env: Optional[GymEnv] = None,
-            eval_freq: int = -1,
-            n_eval_episodes: int = 5,
-            tb_log_name: str = "OnPolicyAlgorithm",
-            eval_log_path: Optional[str] = None,
-            reset_num_timesteps: bool = True,
-            save_interval: Optional[int] = None,
-            save_path: Optional[str] = None,
-            accumulated_save_count: int = 0,
-            accumulated_time_elapsed: float = 0.0,
-            accumulated_iteration: int = 0,
-            accumulated_total_timesteps: int = 0,
-            prefix: str = None,
-            estimate_net: th.nn.Module = None,
-            estimate_optimizer: th.optim = th.optim.Adam,
-    ) -> int:
-        total_timesteps, callback = self._setup_learn(
-            total_timesteps, eval_env, callback, eval_freq, n_eval_episodes, eval_log_path, reset_num_timesteps,
-            tb_log_name
-        )
-
-        estimate_net.to(self.device)
-
-        callback.on_training_start(locals(), globals())
-
-        prefix = f'{prefix} ' if prefix is not None else ''
-
-        max_estimate_right_rate = -np.inf
-        max_estimate_right_rate_iteration = None
-
-        while self.num_timesteps < total_timesteps:
-
-            continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer,
-                                                      n_rollout_steps=self.n_steps)
-
-            if continue_training is False:
-                break
-
-            accumulated_iteration += 1
-            self._update_current_progress_remaining(self.num_timesteps, total_timesteps)
-
-            # Display training infos
-            if log_interval is not None and accumulated_iteration % log_interval == 0:
-                fps = int(accumulated_total_timesteps + self.num_timesteps / (
-                        accumulated_time_elapsed + time.time() - self.start_time))
-                self.logger.record(f"{prefix}time/iterations", accumulated_iteration, exclude="tensorboard")
-
-                if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
-                    self.logger.record(f"{prefix}rollout/ep_rew_mean",
-                                       safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
-                    self.logger.record(f"{prefix}rollout/ep_len_mean",
-                                       safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
-                    if len(self.ep_success_buffer) > 0:
-                        self.logger.record(f"{prefix}rollout/success_rate", safe_mean(self.ep_success_buffer))
-
-                    if self.is_two_stage_env:
-                        if len(self.removal_success_buffer) > 0:
-                            self.logger.record(f"{prefix}rollout/stage_1 success_rate",
-                                               safe_mean(self.removal_success_buffer))
-                        if len(self.global_success_buffer) > 0:
-                            self.logger.record(f"{prefix}rollout/stage_2 success_rate",
-                                               safe_mean(self.global_success_buffer))
-
-                self.logger.record(f"{prefix}time/fps", fps)
-                self.logger.record(f"{prefix}time/time_elapsed",
-                                   int(accumulated_time_elapsed + time.time() - self.start_time),
-                                   exclude="tensorboard")
-                self.logger.record(f"{prefix}time/total_timesteps", accumulated_total_timesteps + self.num_timesteps,
-                                   exclude="tensorboard")
-                self.logger.dump(step=accumulated_total_timesteps + self.num_timesteps)
-
-            # DIY
-            if save_interval is not None and accumulated_iteration % save_interval == 0:
-                assert save_path is not None
-                accumulated_save_count += 1
-                # self.save(save_path + "_" + str(accumulated_save_count))
-                th.save(estimate_net.state_dict(), save_path + "_" + str(accumulated_save_count) + "_ENet")
-                self.logger.record(f"{prefix}Save Model", accumulated_save_count)
-                self.logger.record(f"{prefix}time/iterations", accumulated_iteration)
-                self.logger.record(f"{prefix}time/total_timesteps", accumulated_total_timesteps + self.num_timesteps)
-                self.logger.dump(step=accumulated_total_timesteps + self.num_timesteps)
-            estimate_right_rate = self.train_estimate(estimate_net, estimate_optimizer, prefix=prefix)
-            if estimate_right_rate > max_estimate_right_rate:
-                max_estimate_right_rate = estimate_right_rate.copy()
-                max_estimate_right_rate_iteration = accumulated_iteration
-
-        assert max_estimate_right_rate_iteration is not None
-
-        callback.on_training_end()
-
-        return max_estimate_right_rate_iteration
-
     def _two_stage_env_update_info_buffer(self, infos, dones):
         assert self.removal_success_buffer is not None and self.global_success_buffer is not None
         assert dones is not None
@@ -865,7 +657,6 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env.subproc_vec_env import SubprocVecEnv
 from stable_baselines3.common.vec_env.dummy_vec_env import DummyVecEnv
 from stable_baselines3.common.vec_env.vec_normalize import VecNormalize
-from stable_baselines3.common.torch_layers import ENet
 
 
 lower = 0
@@ -873,10 +664,10 @@ upper = 1
 indicate_list = [lower, upper]
 
 
-def make_env(env_name, ENet_path=None):
+def make_env(env_name, agent_path=None):
     def _thunk():
-        if ENet_path is not None:
-            env = gym.make(env_name, ENet_path=ENet_path)
+        if agent_path is not None:
+            env = gym.make(env_name, agent_path=agent_path)
         else:
             env = gym.make(env_name)
         env = Monitor(env, None, allow_early_resets=True)
@@ -886,9 +677,9 @@ def make_env(env_name, ENet_path=None):
     return _thunk
 
 
-def env_wrapper(env_name, num_envs, ENet_path=None):
+def env_wrapper(env_name, num_envs, agent_path=None):
     envs = [
-        make_env(env_name, ENet_path)
+        make_env(env_name, agent_path)
         for _ in range(num_envs)
     ]
 
@@ -907,18 +698,13 @@ class HrlPPO:
             self,
 
             lower_policy: Union[str, Union[Type[ActorCriticPolicy], Type[HybridPolicy]]],
-            estimate_policy: Union[str, Union[Type[ActorCriticPolicy], Type[HybridPolicy]]],
             upper_policy: Union[str, Union[Type[ActorCriticPolicy], Type[HybridPolicy]]],
 
             lower_env: Union[GymEnv, str],
-            estimate_env: Union[GymEnv, str],
             upper_env: Union[GymEnv, str],
 
             lower_n_steps: int = 2048,
             lower_batch_size: int = 128,
-
-            estimate_n_steps: int = 512,
-            estimate_batch_size: int = 512,
 
             upper_env_id: str = 'PlanningEnv-v0',
             upper_env_num: int = 3,
@@ -950,21 +736,11 @@ class HrlPPO:
                                      vf_coef, max_grad_norm, use_sde, sde_sample_freq, target_kl, tensorboard_log,
                                      create_eval_env, policy_kwargs, verbose, seed, device, _init_setup_model,
                                      is_two_stage_env=True)
-        self.estimate_agent = HybridPPO(estimate_policy, estimate_env, learning_rate, estimate_n_steps,
-                                        estimate_batch_size, n_epochs, gamma, gae_lambda, clip_range, clip_range_vf, ent_coef,
-                                        vf_coef, max_grad_norm, use_sde, sde_sample_freq, target_kl, tensorboard_log,
-                                        create_eval_env, policy_kwargs, verbose, seed, device, _init_setup_model,
-                                        is_two_stage_env=True)
-        self.ENet = ENet()
         self.upper_agent = HybridPPO(upper_policy, upper_env, learning_rate, upper_n_steps,
                                      upper_batch_size, n_epochs, gamma, gae_lambda, clip_range, clip_range_vf, ent_coef,
                                      vf_coef, max_grad_norm, use_sde, sde_sample_freq, target_kl, tensorboard_log,
                                      create_eval_env, policy_kwargs, verbose, seed, device, _init_setup_model,
                                      is_two_stage_env=False)
-
-        self.wrapped_estimate_env = estimate_env
-        self.estimate_n_steps = estimate_n_steps
-        self.estimate_batch_size = estimate_batch_size
 
         self.upper_policy = upper_policy
         self.upper_env_id = upper_env_id
@@ -975,22 +751,9 @@ class HrlPPO:
         self.lr = learning_rate
         self.tensorboard_log = tensorboard_log
 
-    def load_estimate(self, lower_model_path: str = None, logger=None):
-        assert lower_model_path is not None and logger is not None, 'Model path and logger can not be None!!!'
-
-        self.estimate_agent = HybridPPO.load(lower_model_path,
-                                             learning_rate=self.lr,
-                                             env=self.wrapped_estimate_env,
-                                             tensorboard_log=self.tensorboard_log,
-                                             n_steps=self.estimate_n_steps,
-                                             batch_size=self.estimate_batch_size,
-                                             is_two_stage_env=True)
-        self.estimate_agent.reset_rollout_buffer(self.wrapped_estimate_env)
-        self.estimate_agent.set_logger(logger)
-
-    def load_upper(self, ENet_path: str = None, logger=None):
-        assert ENet_path is not None and logger is not None, 'ENet path and logger can not be None!!!'
-        wrapped_upper_env = env_wrapper(self.upper_env_id, self.upper_env_num, ENet_path)
+    def load_upper(self, agent_path: str = None, logger=None):
+        assert agent_path is not None and logger is not None, 'agent path and logger can not be None!!!'
+        wrapped_upper_env = env_wrapper(self.upper_env_id, self.upper_env_num, agent_path)
         self.upper_agent = HybridPPO(self.upper_policy,
                                      wrapped_upper_env,
                                      self.lr,
@@ -1013,29 +776,18 @@ class HrlPPO:
             reset_num_timesteps: bool = True,
             lower_save_interval: Optional[int] = None,
             lower_save_path: Optional[str] = None,
-            estimate_save_interval: Optional[int] = None,
-            estimate_save_path: Optional[str] = None,
             upper_save_interval: Optional[int] = None,
             upper_save_path: Optional[str] = None,
             save_count: int = 0,
             train_lower_iteration: int = 100,
-            train_estimate_iteration: int = 50,
             train_upper_iteration: int = 3000,
             train_lower_model_path: str = None,
-            train_estimate_model_path: str = None,
             train_upper_model_path: str = None,
-            estimate_net=None,
-            estimate_optimizer=None,
     ):
         lower_save_count = save_count
         lower_iteration = 0
         lower_total_timesteps = 0
         lower_time_elapsed = 0
-
-        estimate_save_count = save_count
-        estimate_iteration = 0
-        estimate_total_timesteps = 0
-        estimate_time_elapsed = 0
 
         upper_save_count = save_count
         upper_iteration = 0
@@ -1046,13 +798,10 @@ class HrlPPO:
 
         # judge whether model_path provided or not
         is_lower_model_provided = train_lower_model_path is not None
-        is_estimate_model_provided = train_estimate_model_path is not None
         is_upper_model_provided = train_upper_model_path is not None
 
         if is_lower_model_provided:
             self.load_agent(env=self.lower_agent.env, agent_name='lower', model_path=train_lower_model_path)
-        if is_estimate_model_provided:
-            self.load_agent(env=self.estimate_agent.env, agent_name='estimate', model_path=train_estimate_model_path)
         if is_upper_model_provided:
             self.load_agent(env=self.upper_agent.env, agent_name='upper', model_path=train_upper_model_path)
 
@@ -1067,17 +816,6 @@ class HrlPPO:
                                                                          reset_num_timesteps=reset_num_timesteps,
                                                                          tb_log_name=f'Lower')
 
-        estimate_single_steps = self.estimate_agent.rollout_buffer.n_envs * self.estimate_agent.rollout_buffer.buffer_size
-        estimate_total_steps = estimate_single_steps * total_iteration_count
-        estimate_total_steps, estimate_callback = self.estimate_agent.setup_learn(total_timesteps=estimate_total_steps,
-                                                                                  callback=callback,
-                                                                                  eval_env=eval_env,
-                                                                                  eval_freq=eval_freq,
-                                                                                  n_eval_episodes=n_eval_episodes,
-                                                                                  eval_log_path=eval_log_path,
-                                                                                  reset_num_timesteps=reset_num_timesteps,
-                                                                                  tb_log_name=f'Estimate')
-
         upper_single_steps = self.upper_agent.rollout_buffer.n_envs * self.upper_agent.rollout_buffer.buffer_size
         upper_total_steps = upper_single_steps * total_iteration_count
         upper_total_steps, upper_callback = self.upper_agent.setup_learn(total_timesteps=upper_total_steps,
@@ -1089,7 +827,6 @@ class HrlPPO:
                                                                          tb_log_name=f'Upper')
 
         lower_callback.on_training_start(locals(), globals())
-        estimate_callback.on_training_start(locals(), globals())
         upper_callback.on_training_start(locals(), globals())
 
         for iteration in range(total_iteration_count):
@@ -1115,36 +852,8 @@ class HrlPPO:
             else:
                 latest_lower_model_path = train_lower_model_path
 
-            if not is_estimate_model_provided:
-                self.load_estimate(latest_lower_model_path, self.estimate_agent.logger)
-                estimate_single_steps = self.estimate_agent.rollout_buffer.n_envs * self.estimate_agent.rollout_buffer.buffer_size
-                max_estimate_right_rate_iteration = \
-                    self.estimate_agent.learn_estimate(train_estimate_iteration * estimate_single_steps,
-                                                       estimate_callback, log_interval, eval_env, eval_freq,
-                                                       n_eval_episodes,
-                                                       f'Estimate', eval_log_path, reset_num_timesteps,
-                                                       estimate_save_interval,
-                                                       estimate_save_path,
-                                                       accumulated_save_count=estimate_save_count,
-                                                       accumulated_time_elapsed=estimate_time_elapsed,
-                                                       accumulated_iteration=estimate_iteration,
-                                                       accumulated_total_timesteps=estimate_total_timesteps,
-                                                       prefix='Estimate',
-                                                       estimate_net=estimate_net,
-                                                       estimate_optimizer=estimate_optimizer,
-                                                       )
-                print(f'iteration: {max_estimate_right_rate_iteration}')
-                estimate_save_count += train_estimate_iteration // estimate_save_interval
-                estimate_iteration += train_estimate_iteration
-                estimate_time_elapsed += time.time() - self.estimate_agent.start_time
-                estimate_total_timesteps += self.estimate_agent.num_timesteps
-
-                latest_estimate_model_path = f'{estimate_save_path}_{max_estimate_right_rate_iteration}_ENet'
-            else:
-                latest_estimate_model_path = train_estimate_model_path + '_ENet'
-
             if not is_upper_model_provided:
-                self.load_upper(latest_estimate_model_path, self.upper_agent.logger)
+                self.load_upper(latest_lower_model_path, self.upper_agent.logger)
                 upper_single_steps = self.upper_agent.rollout_buffer.n_envs * self.upper_agent.rollout_buffer.buffer_size
                 self.upper_agent.learn_one_step(train_upper_iteration * upper_single_steps,
                                                 callback, log_interval, eval_env, eval_freq, n_eval_episodes, f'Upper',
@@ -1166,7 +875,6 @@ class HrlPPO:
             print('-' * 64 + f' Total Time Elapsed: {time.time() - start_time} ' + '-' * 64)
 
         lower_callback.on_training_end()
-        estimate_callback.on_training_end()
         upper_callback.on_training_end()
 
     def load_agent(self, env: gym.Env = None, agent_name: str = None, model_path: str = None):
@@ -1178,9 +886,6 @@ class HrlPPO:
         if agent_name == 'lower':
             self.lower_agent.load(model_path, env=env)
             self.lower_agent.reset_rollout_buffer(env)
-        elif agent_name == 'estimate':
-            self.estimate_agent.load(model_path, env=env)
-            self.estimate_agent.reset_rollout_buffer(env)
         elif agent_name == 'upper':
             self.upper_agent.load(model_path, env=env)
             self.upper_agent.reset_rollout_buffer(env)
@@ -1188,16 +893,12 @@ class HrlPPO:
             assert False, f'Agent name is invalid!\nAgent name must in {agent_name_list}'
 
     def load_all_agent(self, model_dir: str = None):
-        agent_name_list = ['lower', 'estimate', 'upper']
-        agent_list = [self.lower_agent, self.estimate_agent, self.upper_agent]
+        agent_name_list = ['lower', 'upper']
+        agent_list = [self.lower_agent, self.upper_agent]
         postfix = '.zip'
         for i in range(len(agent_name_list)):
             for model_path in os.listdir(model_dir):
                 if agent_name_list[i] in model_path:
-                    self.load_agent(agent_name_list[i], os.path.join(model_dir, model_path.replace(postfix, '')))
+                    self.load_agent(agent_list[i].env, agent_name_list[i], os.path.join(model_dir, model_path.replace(postfix, '')))
                     break
             assert isinstance(agent_list[i], HybridPPO), f'{agent_name_list[i]} agent load failed!'
-
-    def load_ENet(self, ENet_path: str = None):
-        assert ENet_path is not None, f'ENet path can not be None!'
-        self.ENet.load_state_dict(th.load(ENet_path))

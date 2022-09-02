@@ -919,25 +919,7 @@ class HybridPolicy(ActorCriticPolicy):
         )
         if self.ortho_init:
             self.estimate_net.apply(partial(self.init_weights, gain=1))
-        # self.estimate_optimizer = self.optimizer_class(self.estimate_net.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)
         self.optimizer = self.optimizer_class(self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)
-
-    def estimate_observations(self, obs: th.Tensor) -> th.Tensor:
-        features = self.extract_features(obs)
-        latent_pi, latent_vf = self.mlp_extractor(features)
-        estimate_latent_vf = latent_vf.detach()
-        success_rates_pred = self.estimate_net(estimate_latent_vf)
-        return success_rates_pred
-
-    def predict_observation(self, observation: Dict[str, np.ndarray]):
-        assert isinstance(observation, dict)
-
-        observation, _ = self.obs_to_tensor(observation)
-        feature = self.extract_features(observation)
-        latent_pi, latent_vf = self.mlp_extractor(feature)
-        success_probability = self.estimate_net(latent_vf).flatten().item()
-
-        return success_probability
 
 
 class ContinuousCritic(BaseModel):
