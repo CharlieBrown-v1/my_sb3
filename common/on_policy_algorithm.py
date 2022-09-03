@@ -315,10 +315,12 @@ class HybridOnPolicyAlgorithm(OnPolicyAlgorithm):
             _init_setup_model: bool = True,
             supported_action_spaces: Optional[Tuple[gym.spaces.Space, ...]] = None,
             is_two_stage_env: bool = False,
+            upper_counting_mode: bool = False,
     ):
         super(HybridOnPolicyAlgorithm, self).__init__(policy, env, learning_rate, n_steps, gamma, gae_lambda, ent_coef, vf_coef, max_grad_norm, use_sde, sde_sample_freq, policy_base, tensorboard_log, create_eval_env, monitor_wrapper, policy_kwargs, verbose, seed, device, _init_setup_model, supported_action_spaces)
 
         self.is_two_stage_env = is_two_stage_env
+        self.upper_counting_mode = upper_counting_mode
 
     def _setup_model(self) -> None:
         self._setup_lr_schedule()
@@ -460,6 +462,9 @@ class HybridOnPolicyAlgorithm(OnPolicyAlgorithm):
                 self._last_episode_starts = dones
                 self._update_info_buffer(infos, dones)
 
+            if self.upper_counting_mode:
+                self._upper_env_update_info_buffer(infos, dones)
+
         with th.no_grad():
             # Compute value for the last timestep
             obs_tensor = obs_as_tensor(new_obs, self.device)
@@ -475,4 +480,7 @@ class HybridOnPolicyAlgorithm(OnPolicyAlgorithm):
         return True
 
     def _two_stage_env_update_info_buffer(self, infos, dones):
+        raise NotImplementedError
+
+    def _upper_env_update_info_buffer(self, infos, dones):
         raise NotImplementedError

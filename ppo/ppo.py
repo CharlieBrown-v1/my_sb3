@@ -350,6 +350,7 @@ class HybridPPO(HybridOnPolicyAlgorithm):
             device: Union[th.device, str] = "auto",
             _init_setup_model: bool = True,
             is_two_stage_env: bool = False,
+            upper_counting_mode: bool = False,
     ):
 
         super(HybridPPO, self).__init__(
@@ -378,6 +379,7 @@ class HybridPPO(HybridOnPolicyAlgorithm):
                 spaces.MultiBinary,
             ),
             is_two_stage_env=is_two_stage_env,
+            upper_counting_mode=upper_counting_mode,
         )
 
         # Sanity check, otherwise it will lead to noisy gradient and NaN
@@ -411,9 +413,10 @@ class HybridPPO(HybridOnPolicyAlgorithm):
         self.target_kl = target_kl
 
         # DIY
-        self.success_rate_threshold = 0.7
         self.removal_success_buffer = None
         self.global_success_buffer = None
+        
+        self.upper_info_buffer = None
 
         if _init_setup_model:
             self._setup_model()
@@ -421,6 +424,9 @@ class HybridPPO(HybridOnPolicyAlgorithm):
         if is_two_stage_env:
             self.removal_success_buffer = deque(maxlen=100)
             self.global_success_buffer = deque(maxlen=100)
+        
+        if upper_counting_mode:
+            self.upper_info_buffer = deque(maxlen=100)
 
     def _setup_model(self) -> None:
         super(HybridPPO, self)._setup_model()
@@ -595,6 +601,19 @@ class HybridPPO(HybridOnPolicyAlgorithm):
                         if len(self.global_success_buffer) > 0:
                             self.logger.record(f"{prefix}rollout/stage_2 success_rate",
                                                safe_mean(self.global_success_buffer))
+                    
+                    if self.upper_counting_mode:
+                        if len(self.upper_info_buffer) > 0:
+                            is_good_goal_arr = np.array([upper_info['is_good_goal']
+                                                         for upper_info in self.upper_info_buffer])
+                            is_obstacle_chosen_arr = np.array([upper_info['is_obstacle_chosen']
+                                                               for upper_info in self.upper_info_buffer])
+                            try:
+                                good_goal_rate = is_good_goal_arr.sum() / is_obstacle_chosen_arr.sum()
+                            except ZeroDivisionError:
+                                good_goal_rate = 1
+
+                            self.logger.record(f"{prefix}rollout/good goal rate", good_goal_rate)
 
                 self.logger.record(f"{prefix}time/fps", fps)
                 self.logger.record(f"{prefix}time/time_elapsed",
@@ -650,6 +669,15 @@ class HybridPPO(HybridOnPolicyAlgorithm):
                 self.removal_success_buffer.append(maybe_removal_success)
             if maybe_global_success is not None and maybe_global_done:
                 self.global_success_buffer.append(maybe_global_success)
+
+    def _upper_env_update_info_buffer(self, infos, dones):
+        assert self.upper_info_buffer is not None
+        assert dones is not None
+
+        for idx, info in enumerate(infos):
+            upper_info = info.get('upper_info')
+            assert upper_info is not None
+            self.upper_info_buffer.extend([upper_info])
 
 
 import gym
@@ -735,12 +763,16 @@ class HrlPPO:
                                      lower_batch_size, n_epochs, gamma, gae_lambda, clip_range, clip_range_vf, ent_coef,
                                      vf_coef, max_grad_norm, use_sde, sde_sample_freq, target_kl, tensorboard_log,
                                      create_eval_env, policy_kwargs, verbose, seed, device, _init_setup_model,
-                                     is_two_stage_env=True)
+                                     is_two_stage_env=True,
+                                     upper_counting_mode=False,
+                                     )
         self.upper_agent = HybridPPO(upper_policy, upper_env, learning_rate, upper_n_steps,
                                      upper_batch_size, n_epochs, gamma, gae_lambda, clip_range, clip_range_vf, ent_coef,
                                      vf_coef, max_grad_norm, use_sde, sde_sample_freq, target_kl, tensorboard_log,
                                      create_eval_env, policy_kwargs, verbose, seed, device, _init_setup_model,
-                                     is_two_stage_env=False)
+                                     is_two_stage_env=False,
+                                     upper_counting_mode=True,
+                                     )
 
         self.upper_policy = upper_policy
         self.upper_env_id = upper_env_id
@@ -763,6 +795,8 @@ class HrlPPO:
                                      verbose=1,
                                      tensorboard_log=self.tensorboard_log,
                                      device=self.device,
+                                     is_two_stage_env=False,
+                                     upper_counting_mode=True,
                                      )
         self.upper_agent.set_logger(logger)
 
@@ -884,13 +918,15 @@ class HrlPPO:
         assert env is not None,        'Env can not be None!'
         assert agent_name is not None, 'Agent name can not be None!'
         assert model_path is not None, 'Model path can not be None!'
-        agent_name_list = ['lower', 'estimate', 'upper']
+        agent_name_list = ['lower', 'upper']
 
         if agent_name == 'lower':
-            self.lower_agent.load(model_path, env=env, device=self.device)
+            self.lower_agent.load(model_path, env=env, device=self.device,
+                                  is_two_stage_env=True, upper_counting_mode=False)
             self.lower_agent.reset_rollout_buffer(env)
         elif agent_name == 'upper':
-            self.upper_agent.load(model_path, env=env, device=self.device)
+            self.upper_agent.load(model_path, env=env, device=self.device,
+                                  is_two_stage_env=False, upper_counting_mode=True)
             self.upper_agent.reset_rollout_buffer(env)
         else:
             assert False, f'Agent name is invalid!\nAgent name must in {agent_name_list}'
@@ -902,6 +938,7 @@ class HrlPPO:
         for i in range(len(agent_name_list)):
             for model_path in os.listdir(model_dir):
                 if agent_name_list[i] in model_path:
-                    self.load_agent(agent_list[i].env, agent_name_list[i], os.path.join(model_dir, model_path.replace(postfix, '')))
+                    self.load_agent(agent_list[i].env, agent_name_list[i],
+                                    os.path.join(model_dir, model_path.replace(postfix, '')))
                     break
             assert isinstance(agent_list[i], HybridPPO), f'{agent_name_list[i]} agent load failed!'
