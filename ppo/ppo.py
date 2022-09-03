@@ -664,10 +664,10 @@ upper = 1
 indicate_list = [lower, upper]
 
 
-def make_env(env_name, agent_path=None):
+def make_env(env_name, agent_path=None, device=None):
     def _thunk():
         if agent_path is not None:
-            env = gym.make(env_name, agent_path=agent_path)
+            env = gym.make(env_name, agent_path=agent_path, device=device)
         else:
             env = gym.make(env_name)
         env = Monitor(env, None, allow_early_resets=True)
@@ -677,9 +677,9 @@ def make_env(env_name, agent_path=None):
     return _thunk
 
 
-def env_wrapper(env_name, num_envs, agent_path=None):
+def env_wrapper(env_name, num_envs, agent_path=None, device=None):
     envs = [
-        make_env(env_name, agent_path)
+        make_env(env_name, agent_path=agent_path, device=device)
         for _ in range(num_envs)
     ]
 
@@ -748,19 +748,22 @@ class HrlPPO:
         self.upper_n_steps = upper_n_steps
         self.upper_batch_size = upper_batch_size
 
+        self.device = device
         self.lr = learning_rate
         self.tensorboard_log = tensorboard_log
 
     def load_upper(self, agent_path: str = None, logger=None):
         assert agent_path is not None and logger is not None, 'agent path and logger can not be None!!!'
-        wrapped_upper_env = env_wrapper(self.upper_env_id, self.upper_env_num, agent_path)
+        wrapped_upper_env = env_wrapper(self.upper_env_id, self.upper_env_num, agent_path=agent_path, device=self.device)
         self.upper_agent = HybridPPO(self.upper_policy,
                                      wrapped_upper_env,
                                      self.lr,
                                      self.upper_n_steps,
                                      batch_size=self.upper_batch_size,
                                      verbose=1,
-                                     tensorboard_log=self.tensorboard_log)
+                                     tensorboard_log=self.tensorboard_log,
+                                     device=self.device,
+                                     )
         self.upper_agent.set_logger(logger)
 
     def learn(
@@ -884,10 +887,10 @@ class HrlPPO:
         agent_name_list = ['lower', 'estimate', 'upper']
 
         if agent_name == 'lower':
-            self.lower_agent.load(model_path, env=env)
+            self.lower_agent.load(model_path, env=env, device=self.device)
             self.lower_agent.reset_rollout_buffer(env)
         elif agent_name == 'upper':
-            self.upper_agent.load(model_path, env=env)
+            self.upper_agent.load(model_path, env=env, device=self.device)
             self.upper_agent.reset_rollout_buffer(env)
         else:
             assert False, f'Agent name is invalid!\nAgent name must in {agent_name_list}'
