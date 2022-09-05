@@ -781,6 +781,7 @@ class HrlPPO:
         self.upper_batch_size = upper_batch_size
 
         self.device = device
+        self.seed = seed
         self.lr = learning_rate
         self.tensorboard_log = tensorboard_log
 
@@ -797,6 +798,7 @@ class HrlPPO:
                                      device=self.device,
                                      is_two_stage_env=False,
                                      upper_counting_mode=True,
+                                     seed=self.seed,
                                      )
         self.upper_agent.set_logger(logger)
 
@@ -921,11 +923,11 @@ class HrlPPO:
         agent_name_list = ['lower', 'upper']
 
         if agent_name == 'lower':
-            self.lower_agent.load(model_path, env=env, device=self.device,
+            self.lower_agent.load(model_path, env=env, device=self.device, seed=self.seed,
                                   is_two_stage_env=True, upper_counting_mode=False)
             self.lower_agent.reset_rollout_buffer(env)
         elif agent_name == 'upper':
-            self.upper_agent.load(model_path, env=env, device=self.device,
+            self.upper_agent.load(model_path, env=env, device=self.device, seed=self.seed,
                                   is_two_stage_env=False, upper_counting_mode=True)
             self.upper_agent.reset_rollout_buffer(env)
         else:
