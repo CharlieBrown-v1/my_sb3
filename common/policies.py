@@ -902,25 +902,6 @@ class HybridPolicy(ActorCriticPolicy):
             optimizer_kwargs,
         )
 
-    def _build_mlp_extractor(self) -> None:
-        self.mlp_extractor = MlpExtractor(
-            self.features_dim,
-            net_arch=self.net_arch,
-            activation_fn=self.activation_fn,
-            device=self.device,
-        )
-
-    def _build(self, lr_schedule: Schedule) -> None:
-        super(HybridPolicy, self)._build(lr_schedule)
-
-        self.estimate_net = nn.Sequential(
-            nn.Linear(self.mlp_extractor.latent_dim_vf, 1),
-            nn.Sigmoid()
-        )
-        if self.ortho_init:
-            self.estimate_net.apply(partial(self.init_weights, gain=1))
-        self.optimizer = self.optimizer_class(self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs)
-
 
 class ContinuousCritic(BaseModel):
     """

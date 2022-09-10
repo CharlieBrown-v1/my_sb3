@@ -1,6 +1,6 @@
 import os
 import warnings
-from typing import Any, Dict, Optional, Type, Union
+from typing import Any, Dict, Optional, Type, Union, Tuple
 
 import numpy as np
 import torch as th
@@ -553,7 +553,8 @@ class HybridPPO(HybridOnPolicyAlgorithm):
             eval_log_path: Optional[str] = None,
             reset_num_timesteps: bool = True,
             save_interval: Optional[int] = None,
-            save_path: Optional[str] = None,
+            model_save_path: Optional[str] = None,
+            success_rate_save_path: Optional[str] = None,
             accumulated_save_count: int = 0,
             accumulated_time_elapsed: float = 0.0,
             accumulated_iteration: int = 0,
@@ -568,6 +569,8 @@ class HybridPPO(HybridOnPolicyAlgorithm):
         callback.on_training_start(locals(), globals())
 
         prefix = f'{prefix} ' if prefix is not None else ''
+        success_rate_arr = np.array([0])
+        timesteps_arr    = np.array([0])
 
         while self.num_timesteps < total_timesteps:
 
@@ -592,7 +595,10 @@ class HybridPPO(HybridOnPolicyAlgorithm):
                     self.logger.record(f"{prefix}rollout/ep_len_mean",
                                        safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
                     if len(self.ep_success_buffer) > 0:
-                        self.logger.record(f"{prefix}rollout/success_rate", safe_mean(self.ep_success_buffer))
+                        success_rate_mean = safe_mean(self.ep_success_buffer)
+                        self.logger.record(f"{prefix}rollout/success_rate", success_rate_mean)
+                        success_rate_arr = np.r_[success_rate_arr, success_rate_mean]
+                        timesteps_arr    = np.r_[timesteps_arr, accumulated_total_timesteps + self.num_timesteps]
 
                     if self.is_two_stage_env:
                         if len(self.removal_success_buffer) > 0:
@@ -625,9 +631,9 @@ class HybridPPO(HybridOnPolicyAlgorithm):
 
             # DIY
             if save_interval is not None and accumulated_iteration % save_interval == 0:
-                assert save_path is not None
+                assert model_save_path is not None
                 accumulated_save_count += 1
-                self.save(save_path + "_" + str(accumulated_save_count))
+                self.save(model_save_path + "_" + str(accumulated_save_count))
                 self.logger.record(f"{prefix}Save Model", accumulated_save_count)
                 self.logger.record(f"{prefix}time/iterations", accumulated_iteration)
                 self.logger.record(f"{prefix}time/total_timesteps", accumulated_total_timesteps + self.num_timesteps)
@@ -635,9 +641,24 @@ class HybridPPO(HybridOnPolicyAlgorithm):
 
             self.train(prefix=prefix)
 
+        if success_rate_save_path is not None:
+            self.save_success_rate(success_rate_save_path=success_rate_save_path,
+                                   success_rate_arr=success_rate_arr,
+                                   timesteps_arr=timesteps_arr,
+                                   )
+
         callback.on_training_end()
 
         return self
+
+    def save_success_rate(self,
+                          success_rate_save_path: Optional[str] = None,
+                          success_rate_arr: np.ndarray = None,
+                          timesteps_arr: np.ndarray = None,
+                          ) -> None:
+        assert success_rate_save_path is not None and success_rate_arr is not None and timesteps_arr is not None
+        np.save(os.path.join(success_rate_save_path, f'seed:{self.seed}_timesteps'), timesteps_arr)
+        np.save(os.path.join(success_rate_save_path, f'seed:{self.seed}_success_rate'), success_rate_arr)
 
     def setup_learn(self, total_timesteps, eval_env, callback, eval_freq, n_eval_episodes, eval_log_path,
                     reset_num_timesteps, tb_log_name):
