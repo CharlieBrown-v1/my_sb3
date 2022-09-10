@@ -369,16 +369,6 @@ class HybridOnPolicyAlgorithm(OnPolicyAlgorithm):
     def train(self) -> None:
         raise NotImplementedError
 
-    def train_estimate(self, prefix=None) -> None:
-        raise NotImplementedError
-
-    def learn_estimate(self, total_timesteps: int, callback: MaybeCallback = None, log_interval: int = 1,
-                       eval_env: Optional[GymEnv] = None, eval_freq: int = -1, n_eval_episodes: int = 5,
-                       tb_log_name: str = "OnPolicyAlgorithm", eval_log_path: Optional[str] = None,
-                       reset_num_timesteps: bool = True, save_interval: Optional[int] = None,
-                       save_path: Optional[str] = None, save_count: int = 0, prefix: str = None) -> None:
-        raise NotImplementedError
-
     def collect_rollouts(
             self,
             env: VecEnv,
