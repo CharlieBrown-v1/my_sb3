@@ -804,6 +804,7 @@ class HrlPPO:
         self.device = device
         self.seed = seed
         self.lr = learning_rate
+        self.target_kl = target_kl
         self.tensorboard_log = tensorboard_log
 
     def load_upper(self, agent_path: str = None, logger=None):
@@ -819,6 +820,7 @@ class HrlPPO:
                                      device=self.device,
                                      is_two_stage_env=False,
                                      upper_counting_mode=True,
+                                     target_kl=self.target_kl,
                                      seed=self.seed,
                                      )
         self.upper_agent.set_logger(logger)
