@@ -59,32 +59,32 @@ class DQN(OffPolicyAlgorithm):
     """
 
     def __init__(
-        self,
-        policy: Union[str, Type[DQNPolicy]],
-        env: Union[GymEnv, str],
-        learning_rate: Union[float, Schedule] = 1e-4,
-        buffer_size: int = 1_000_000,  # 1e6
-        learning_starts: int = 50000,
-        batch_size: Optional[int] = 32,
-        tau: float = 1.0,
-        gamma: float = 0.99,
-        train_freq: Union[int, Tuple[int, str]] = 4,
-        gradient_steps: int = 1,
-        replay_buffer_class: Optional[ReplayBuffer] = None,
-        replay_buffer_kwargs: Optional[Dict[str, Any]] = None,
-        optimize_memory_usage: bool = False,
-        target_update_interval: int = 10000,
-        exploration_fraction: float = 0.1,
-        exploration_initial_eps: float = 1.0,
-        exploration_final_eps: float = 0.05,
-        max_grad_norm: float = 10,
-        tensorboard_log: Optional[str] = None,
-        create_eval_env: bool = False,
-        policy_kwargs: Optional[Dict[str, Any]] = None,
-        verbose: int = 0,
-        seed: Optional[int] = None,
-        device: Union[th.device, str] = "auto",
-        _init_setup_model: bool = True,
+            self,
+            policy: Union[str, Type[DQNPolicy]],
+            env: Union[GymEnv, str],
+            learning_rate: Union[float, Schedule] = 1e-4,
+            buffer_size: int = 1_000_000,  # 1e6
+            learning_starts: int = 50000,
+            batch_size: Optional[int] = 32,
+            tau: float = 1.0,
+            gamma: float = 0.99,
+            train_freq: Union[int, Tuple[int, str]] = 4,
+            gradient_steps: int = 1,
+            replay_buffer_class: Optional[ReplayBuffer] = None,
+            replay_buffer_kwargs: Optional[Dict[str, Any]] = None,
+            optimize_memory_usage: bool = False,
+            target_update_interval: int = 10000,
+            exploration_fraction: float = 0.1,
+            exploration_initial_eps: float = 1.0,
+            exploration_final_eps: float = 0.05,
+            max_grad_norm: float = 10,
+            tensorboard_log: Optional[str] = None,
+            create_eval_env: bool = False,
+            policy_kwargs: Optional[Dict[str, Any]] = None,
+            verbose: int = 0,
+            seed: Optional[int] = None,
+            device: Union[th.device, str] = "auto",
+            _init_setup_model: bool = True,
     ):
 
         super(DQN, self).__init__(
@@ -196,11 +196,11 @@ class DQN(OffPolicyAlgorithm):
         self.logger.record("train/loss", np.mean(losses))
 
     def predict(
-        self,
-        observation: np.ndarray,
-        state: Optional[np.ndarray] = None,
-        mask: Optional[np.ndarray] = None,
-        deterministic: bool = False,
+            self,
+            observation: np.ndarray,
+            state: Optional[np.ndarray] = None,
+            mask: Optional[np.ndarray] = None,
+            deterministic: bool = False,
     ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
         """
         Overrides the base_class predict function to include epsilon-greedy exploration.
@@ -226,16 +226,16 @@ class DQN(OffPolicyAlgorithm):
         return action, state
 
     def learn(
-        self,
-        total_timesteps: int,
-        callback: MaybeCallback = None,
-        log_interval: int = 4,
-        eval_env: Optional[GymEnv] = None,
-        eval_freq: int = -1,
-        n_eval_episodes: int = 5,
-        tb_log_name: str = "DQN",
-        eval_log_path: Optional[str] = None,
-        reset_num_timesteps: bool = True,
+            self,
+            total_timesteps: int,
+            callback: MaybeCallback = None,
+            log_interval: int = 4,
+            eval_env: Optional[GymEnv] = None,
+            eval_freq: int = -1,
+            n_eval_episodes: int = 5,
+            tb_log_name: str = "DQN",
+            eval_log_path: Optional[str] = None,
+            reset_num_timesteps: bool = True,
     ) -> OffPolicyAlgorithm:
 
         return super(DQN, self).learn(
@@ -257,3 +257,60 @@ class DQN(OffPolicyAlgorithm):
         state_dicts = ["policy", "policy.optimizer"]
 
         return state_dicts, []
+
+
+class HybridDQN(DQN):
+    def learn_one_step(
+            self,
+            total_timesteps: int,
+            callback: MaybeCallback = None,
+            log_interval: int = 4,
+            eval_env: Optional[GymEnv] = None,
+            eval_freq: int = -1,
+            n_eval_episodes: int = 5,
+            tb_log_name: str = "DQN",
+            eval_log_path: Optional[str] = None,
+            reset_num_timesteps: bool = True,
+            save_interval: Optional[int] = None,
+            save_path: Optional[str] = None,
+    ):
+        total_timesteps, callback = self._setup_learn(
+            total_timesteps,
+            eval_env,
+            callback,
+            eval_freq,
+            n_eval_episodes,
+            eval_log_path,
+            reset_num_timesteps,
+            tb_log_name,
+        )
+
+        callback.on_training_start(locals(), globals())
+
+        while self.num_timesteps < total_timesteps:
+            rollout = self.collect_rollouts(
+                self.env,
+                train_freq=self.train_freq,
+                action_noise=self.action_noise,
+                callback=callback,
+                learning_starts=self.learning_starts,
+                replay_buffer=self.replay_buffer,
+                log_interval=log_interval,
+                save_interval=save_interval,
+                save_path=save_path,
+            )
+
+            if rollout.continue_training is False:
+                break
+
+            if self.num_timesteps > 0 and self.num_timesteps > self.learning_starts:
+                # If no `gradient_steps` is specified,
+                # do as many gradients steps as steps performed during the rollout
+                gradient_steps = self.gradient_steps if self.gradient_steps >= 0 else rollout.episode_timesteps
+                # Special case when the user passes `gradient_steps=0`
+                if gradient_steps > 0:
+                    self.train(batch_size=self.batch_size, gradient_steps=gradient_steps)
+
+        callback.on_training_end()
+
+        return self

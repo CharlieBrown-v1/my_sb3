@@ -553,7 +553,7 @@ class HybridPPO(HybridOnPolicyAlgorithm):
             eval_log_path: Optional[str] = None,
             reset_num_timesteps: bool = True,
             save_interval: Optional[int] = None,
-            model_save_path: Optional[str] = None,
+            save_path: Optional[str] = None,
             success_rate_save_path: Optional[str] = None,
             accumulated_save_count: int = 0,
             accumulated_time_elapsed: float = 0.0,
@@ -631,9 +631,9 @@ class HybridPPO(HybridOnPolicyAlgorithm):
 
             # DIY
             if save_interval is not None and accumulated_iteration % save_interval == 0:
-                assert model_save_path is not None
+                assert save_path is not None
                 accumulated_save_count += 1
-                self.save(model_save_path + "_" + str(accumulated_save_count))
+                self.save(save_path + "_" + str(accumulated_save_count))
                 self.logger.record(f"{prefix}Save Model", accumulated_save_count)
                 self.logger.record(f"{prefix}time/iterations", accumulated_iteration)
                 self.logger.record(f"{prefix}time/total_timesteps", accumulated_total_timesteps + self.num_timesteps)

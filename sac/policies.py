@@ -517,7 +517,7 @@ class MultiInputPolicy(SACPolicy):
         )
 
 
-class CubePolicy(SACPolicy):
+class HybridPolicy(SACPolicy):
     def __init__(
         self,
         observation_space: gym.spaces.Space,
@@ -538,7 +538,7 @@ class CubePolicy(SACPolicy):
         n_critics: int = 2,
         share_features_extractor: bool = True,
     ):
-        super(CubePolicy, self).__init__(
+        super(HybridPolicy, self).__init__(
             observation_space,
             action_space,
             lr_schedule,
@@ -562,4 +562,4 @@ class CubePolicy(SACPolicy):
 register_policy("MlpPolicy", MlpPolicy)
 register_policy("CnnPolicy", CnnPolicy)
 register_policy("MultiInputPolicy", MultiInputPolicy)
-register_policy("CubePolicy", CubePolicy)
+register_policy("HybridPolicy", HybridPolicy)
