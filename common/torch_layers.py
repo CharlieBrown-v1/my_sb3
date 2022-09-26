@@ -279,40 +279,35 @@ class CombinedExtractor(BaseFeaturesExtractor):
 # DIY
 class HybridExtractor(BaseFeaturesExtractor):
     def __init__(self, observation_space: gym.spaces.Dict,
-                 cube_shape: list = None,
+                 image_shape=None,
+                 physical_dim: int = 10,
+                 depth: bool = False,
+                 embedding_dim: int = 64,
                  ):
 
         super(HybridExtractor, self).__init__(observation_space, features_dim=1)
 
-        self.cube_shape = [25, 35, 17] if cube_shape is None else cube_shape.copy()
-        self.cube_len = th.prod(th.as_tensor(self.cube_shape))
-        self.n_input_channels = 1
-        self.cube_latent_dim = 768
-        self.physical_dim = 25 + 3 + 3
-        self.embedding_dim = 64
-        self.n_input_channels = 1
+        if depth:
+            self.n_input_channels = 1
+        else:
+            self.n_input_channels = 3
+        if image_shape is None:
+            image_shape = [500, 500]
+        self.image_shape = image_shape.copy()
+        self.image_len = th.prod(th.as_tensor([self.n_input_channels] + self.image_shape))
 
-        self.cnn = nn.Sequential(
-            nn.Conv3d(self.n_input_channels, 32, kernel_size=(3, 3, 3), stride=(1, 1, 1)),
-            nn.BatchNorm3d(32),
-            nn.ReLU(),
-            nn.MaxPool3d(kernel_size=(1, 2, 2), stride=(1, 2, 2)),
+        assert 'achieved_goal' in observation_space.spaces and 'desired_goal' in observation_space.spaces
+        # 3 for achieved_goal, 3 for desired_goal
+        self.physical_dim = physical_dim + 3 + 3
 
-            nn.Conv3d(32, 64, kernel_size=(3, 3, 3), stride=(1, 1, 1)),
-            nn.BatchNorm3d(64),
-            nn.ReLU(),
-            nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2)),
+        self.embedding_dim = embedding_dim
+        self.cnn = th.hub.load('pytorch/vision:v0.10.0', 'densenet121', pretrained=True)
 
-            nn.Conv3d(64, 64, kernel_size=(3, 3, 2), stride=(1, 1, 1)),
-            nn.BatchNorm3d(64),
-            nn.ReLU(),
-            nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2), padding=(0, 1, 1)),
-
-            nn.Flatten(),
-        )
+        with th.no_grad():
+            image_latent_dim = self.cnn(th.as_tensor(observation_space['observation'].sample()[:self.image_len]).reshape([-1, self.n_input_channels] + image_shape)).shape[1]
 
         self.cnn_linear = nn.Sequential(
-            nn.Linear(self.cube_latent_dim, self.embedding_dim),
+            nn.Linear(image_latent_dim, self.embedding_dim),
             nn.ReLU()
         )
         self.physical_linear = nn.Sequential(
@@ -326,12 +321,13 @@ class HybridExtractor(BaseFeaturesExtractor):
     def cnn_forward(self, observations: th.Tensor):
         if len(observations.shape) == 1:
             observations = observations[None, :]
-        cube_latent = th.reshape(observations[:, :self.cube_len], shape=[-1, self.n_input_channels] + self.cube_shape)
-        cube_latent = self.cnn(cube_latent)
-        cube_latent = self.cnn_linear(cube_latent)
-        physical_latent = observations[:, self.cube_len:]
+        image_latent = th.reshape(observations[:, :self.image_len],
+                                  shape=[-1, self.n_input_channels] + self.image_shape)
+        image_latent = self.cnn(image_latent)
+        image_latent = self.cnn_linear(image_latent)
+        physical_latent = observations[:, self.image_len:]
 
-        return cube_latent, physical_latent
+        return image_latent, physical_latent
 
     def forward(self, observation: dict) -> th.Tensor:
         tensor_list = []
@@ -342,16 +338,16 @@ class HybridExtractor(BaseFeaturesExtractor):
                 sub_observation = sub_observation[None, :]
 
             if key == 'observation':
-                cube_latent, physical_latent = self.cnn_forward(sub_observation)
-                tensor_list.extend([physical_latent, cube_latent])
+                image_latent, physical_latent = self.cnn_forward(sub_observation)
+                tensor_list.extend([physical_latent, image_latent])
             else:
                 tensor_list.append(sub_observation)
 
         tensor = th.cat(tensor_list, dim=-1)
 
         physical_latent = self.physical_linear(tensor[:, :-self.embedding_dim])
-        cube_latent = tensor[:, -self.embedding_dim:]
-        latent = th.cat((physical_latent, cube_latent), dim=-1)
+        image_latent = tensor[:, -self.embedding_dim:]
+        latent = th.cat((physical_latent, image_latent), dim=-1)
 
         return latent
 
