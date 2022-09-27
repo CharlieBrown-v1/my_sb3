@@ -301,10 +301,19 @@ class HybridExtractor(BaseFeaturesExtractor):
         self.physical_dim = physical_dim + 3 + 3
 
         self.embedding_dim = embedding_dim
-        self.cnn = th.hub.load('pytorch/vision:v0.10.0', 'densenet121', weights="DenseNet121_Weights.DEFAULT")
+        self.cnn = nn.Sequential(
+            nn.Conv2d(self.n_input_channels, 32, kernel_size=8, stride=4, padding=0),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=0),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=0),
+            nn.ReLU(),
+            nn.Flatten(),
+        )
 
         with th.no_grad():
-            image_latent_dim = self.cnn(th.as_tensor(observation_space['observation'].sample()[:self.image_len]).reshape([-1, self.n_input_channels] + image_shape)).shape[1]
+            image_latent_dim = self.cnn(th.as_tensor(observation_space['observation'].sample()[:self.image_len])
+                                        .reshape([-1, self.n_input_channels] + image_shape)).shape[1]
 
         self.cnn_linear = nn.Sequential(
             nn.Linear(image_latent_dim, self.embedding_dim),
