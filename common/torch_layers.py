@@ -1,6 +1,3 @@
-from itertools import zip_longest
-from typing import Dict, List, Tuple, Type, Union
-
 import gym
 import torch as th
 from torch import nn
@@ -8,8 +5,9 @@ from torch import nn
 from stable_baselines3.common.preprocessing import get_flattened_obs_dim, is_image_space
 from stable_baselines3.common.type_aliases import TensorDict
 from stable_baselines3.common.utils import get_device
-
-import torch.nn.functional as F
+from itertools import zip_longest
+from typing import Dict, List, Tuple, Type, Union
+from torchvision import transforms
 
 
 class BaseFeaturesExtractor(nn.Module):
@@ -295,13 +293,15 @@ class HybridExtractor(BaseFeaturesExtractor):
             image_shape = [500, 500]
         self.image_shape = image_shape.copy()
         self.image_len = th.prod(th.as_tensor([self.n_input_channels] + self.image_shape))
+        self.pretrain_mean = [0.485, 0.456, 0.406]
+        self.pretrain_std  = [0.229, 0.224, 0.225]
 
         assert 'achieved_goal' in observation_space.spaces and 'desired_goal' in observation_space.spaces
         # 3 for achieved_goal, 3 for desired_goal
         self.physical_dim = physical_dim + 3 + 3
 
         self.embedding_dim = embedding_dim
-        self.cnn = th.hub.load('pytorch/vision:v0.10.0', 'densenet121', pretrained=True)
+        self.cnn = th.hub.load('pytorch/vision:v0.10.0', 'densenet121', weights="DenseNet121_Weights.DEFAULT")
 
         with th.no_grad():
             image_latent_dim = self.cnn(th.as_tensor(observation_space['observation'].sample()[:self.image_len]).reshape([-1, self.n_input_channels] + image_shape)).shape[1]
@@ -321,9 +321,17 @@ class HybridExtractor(BaseFeaturesExtractor):
     def cnn_forward(self, observations: th.Tensor):
         if len(observations.shape) == 1:
             observations = observations[None, :]
-        image_latent = th.reshape(observations[:, :self.image_len],
-                                  shape=[-1, self.n_input_channels] + self.image_shape)
-        image_latent = self.cnn(image_latent)
+        image = th.reshape(observations[:, :self.image_len],
+                           shape=[-1, self.n_input_channels] + self.image_shape)
+
+        # preprocess data as https://pytorch.org/hub/pytorch_vision_densenet/ saying
+        image = image.float() / 255.0
+        preprocess = transforms.Compose([
+            transforms.Normalize(mean=self.pretrain_mean, std=self.pretrain_std),
+        ])
+        tensor = preprocess(image)
+
+        image_latent = self.cnn(tensor)
         image_latent = self.cnn_linear(image_latent)
         physical_latent = observations[:, self.image_len:]
 
