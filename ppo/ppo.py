@@ -415,7 +415,7 @@ class HybridPPO(HybridOnPolicyAlgorithm):
         # DIY
         self.removal_success_buffer = None
         self.global_success_buffer = None
-        
+
         self.upper_info_buffer = None
 
         if _init_setup_model:
@@ -424,7 +424,7 @@ class HybridPPO(HybridOnPolicyAlgorithm):
         if is_two_stage_env:
             self.removal_success_buffer = deque(maxlen=100)
             self.global_success_buffer = deque(maxlen=100)
-        
+
         if upper_counting_mode:
             self.upper_info_buffer = deque(maxlen=100)
 
@@ -570,7 +570,7 @@ class HybridPPO(HybridOnPolicyAlgorithm):
 
         prefix = f'{prefix} ' if prefix is not None else ''
         success_rate_arr = np.array([0])
-        timesteps_arr    = np.array([0])
+        timesteps_arr = np.array([0])
 
         while self.num_timesteps < total_timesteps:
 
@@ -598,7 +598,7 @@ class HybridPPO(HybridOnPolicyAlgorithm):
                         success_rate_mean = safe_mean(self.ep_success_buffer)
                         self.logger.record(f"{prefix}rollout/success_rate", success_rate_mean)
                         success_rate_arr = np.r_[success_rate_arr, success_rate_mean]
-                        timesteps_arr    = np.r_[timesteps_arr, accumulated_total_timesteps + self.num_timesteps]
+                        timesteps_arr = np.r_[timesteps_arr, accumulated_total_timesteps + self.num_timesteps]
 
                     if self.is_two_stage_env:
                         if len(self.removal_success_buffer) > 0:
@@ -607,7 +607,7 @@ class HybridPPO(HybridOnPolicyAlgorithm):
                         if len(self.global_success_buffer) > 0:
                             self.logger.record(f"{prefix}rollout/stage_2 success_rate",
                                                safe_mean(self.global_success_buffer))
-                    
+
                     if self.upper_counting_mode:
                         if len(self.upper_info_buffer) > 0:
                             is_good_goal_arr = np.array([upper_info['is_good_goal']
@@ -679,7 +679,8 @@ class HybridPPO(HybridOnPolicyAlgorithm):
             maybe_removal_done = info.get('removal_done') or info.get('TimeLimit.truncated', False)
             maybe_removal_success = info.get('removal_success')
 
-            maybe_global_done = info.get('global_done') or (not info.get('removal_done') and info.get('TimeLimit.truncated', False))
+            maybe_global_done = info.get('global_done') or (
+                        not info.get('removal_done') and info.get('TimeLimit.truncated', False))
             maybe_global_success = info.get('global_success')
 
             if maybe_ep_info is not None:
@@ -706,7 +707,6 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env.subproc_vec_env import SubprocVecEnv
 from stable_baselines3.common.vec_env.dummy_vec_env import DummyVecEnv
 from stable_baselines3.common.vec_env.vec_normalize import VecNormalize
-
 
 lower = 0
 upper = 1
@@ -752,13 +752,15 @@ class HrlPPO:
             lower_env: Union[GymEnv, str],
             upper_env: Union[GymEnv, str],
 
+            lower_env_id: str = 'HrlDense-v0',
+            lower_env_num: int = 40,
             lower_n_steps: int = 2048,
             lower_batch_size: int = 128,
 
-            upper_env_id: str = 'PlanningEnv-v0',
+            upper_env_id: str = 'Stack-v0',
             upper_env_num: int = 3,
-            upper_n_steps: int = 256,
-            upper_batch_size: int = 128,
+            upper_n_steps: int = 64,
+            upper_batch_size: int = 16,
 
             learning_rate: Union[float, Schedule] = 3e-4,
             n_epochs: int = 10,
@@ -784,7 +786,7 @@ class HrlPPO:
                                      lower_batch_size, n_epochs, gamma, gae_lambda, clip_range, clip_range_vf, ent_coef,
                                      vf_coef, max_grad_norm, use_sde, sde_sample_freq, target_kl, tensorboard_log,
                                      create_eval_env, policy_kwargs, verbose, seed, device, _init_setup_model,
-                                     is_two_stage_env=True,
+                                     is_two_stage_env=False,
                                      upper_counting_mode=False,
                                      )
         self.upper_agent = HybridPPO(upper_policy, upper_env, learning_rate, upper_n_steps,
@@ -792,8 +794,14 @@ class HrlPPO:
                                      vf_coef, max_grad_norm, use_sde, sde_sample_freq, target_kl, tensorboard_log,
                                      create_eval_env, policy_kwargs, verbose, seed, device, _init_setup_model,
                                      is_two_stage_env=False,
-                                     upper_counting_mode=True,
+                                     upper_counting_mode=False,
                                      )
+
+        self.lower_policy = lower_policy
+        self.lower_env_id = lower_env_id
+        self.lower_env_num = lower_env_num
+        self.lower_n_steps = lower_n_steps
+        self.lower_batch_size = lower_batch_size
 
         self.upper_policy = upper_policy
         self.upper_env_id = upper_env_id
@@ -807,9 +815,28 @@ class HrlPPO:
         self.target_kl = target_kl
         self.tensorboard_log = tensorboard_log
 
+    def load_lower(self, agent_path: str = None, logger=None):
+        assert logger is not None, 'Logger can not be None!!!'
+        wrapped_lower_env = env_wrapper(self.lower_env_id, self.lower_env_num, agent_path=agent_path,
+                                        device=self.device)
+        self.lower_agent = HybridPPO(self.lower_policy,
+                                     wrapped_lower_env,
+                                     self.lr,
+                                     self.lower_n_steps,
+                                     batch_size=self.lower_batch_size,
+                                     verbose=1,
+                                     tensorboard_log=self.tensorboard_log,
+                                     device=self.device,
+                                     is_two_stage_env=False,
+                                     target_kl=self.target_kl,
+                                     seed=self.seed,
+                                     )
+        self.lower_agent.set_logger(logger)
+
     def load_upper(self, agent_path: str = None, logger=None):
-        assert agent_path is not None and logger is not None, 'agent path and logger can not be None!!!'
-        wrapped_upper_env = env_wrapper(self.upper_env_id, self.upper_env_num, agent_path=agent_path, device=self.device)
+        assert logger is not None, 'Logger can not be None!!!'
+        wrapped_upper_env = env_wrapper(self.upper_env_id, self.upper_env_num, agent_path=agent_path,
+                                        device=self.device)
         self.upper_agent = HybridPPO(self.upper_policy,
                                      wrapped_upper_env,
                                      self.lr,
@@ -891,10 +918,17 @@ class HrlPPO:
         lower_callback.on_training_start(locals(), globals())
         upper_callback.on_training_start(locals(), globals())
 
+        latest_lower_model_path = f'{lower_save_path}_{lower_save_count}'
+        latest_upper_model_path = f'{upper_save_path}_{upper_save_count}'
+        self.lower_agent.save(latest_lower_model_path)
+        self.upper_agent.save(latest_upper_model_path)
+
         for iteration in range(total_iteration_count):
             print(f'Round {iteration + 1} training starts!')
 
             if not is_lower_model_provided:
+                self.load_lower(latest_upper_model_path, self.upper_agent.logger)
+                lower_single_steps = self.lower_agent.rollout_buffer.n_envs * self.lower_agent.rollout_buffer.buffer_size
                 self.lower_agent.set_logger(self.lower_agent.logger)
                 self.lower_agent.learn_one_step(train_lower_iteration * lower_single_steps,
                                                 lower_callback, log_interval, eval_env, eval_freq, n_eval_episodes,
@@ -909,7 +943,6 @@ class HrlPPO:
                 lower_iteration += train_lower_iteration
                 lower_time_elapsed += time.time() - self.lower_agent.start_time
                 lower_total_steps += self.lower_agent.num_timesteps
-
                 latest_lower_model_path = f'{lower_save_path}_{lower_save_count}'
             else:
                 latest_lower_model_path = train_lower_model_path
@@ -917,9 +950,10 @@ class HrlPPO:
             if not is_upper_model_provided:
                 self.load_upper(latest_lower_model_path, self.upper_agent.logger)
                 upper_single_steps = self.upper_agent.rollout_buffer.n_envs * self.upper_agent.rollout_buffer.buffer_size
+                self.upper_agent.set_logger(self.upper_agent.logger)
                 self.upper_agent.learn_one_step(train_upper_iteration * upper_single_steps,
-                                                callback, log_interval, eval_env, eval_freq, n_eval_episodes, f'Upper',
-                                                eval_log_path, reset_num_timesteps, upper_save_interval,
+                                                callback, log_interval, eval_env, eval_freq, n_eval_episodes,
+                                                f'Upper', eval_log_path, reset_num_timesteps, upper_save_interval,
                                                 upper_save_path,
                                                 accumulated_save_count=upper_save_count,
                                                 accumulated_time_elapsed=upper_time_elapsed,
@@ -930,8 +964,9 @@ class HrlPPO:
                 upper_iteration += train_upper_iteration
                 upper_time_elapsed += time.time() - self.upper_agent.start_time
                 upper_total_timesteps += self.upper_agent.num_timesteps
+                latest_upper_model_path = f'{upper_save_path}_{upper_save_count}'
             else:
-                raise NotImplementedError
+                latest_upper_model_path = train_upper_model_path
 
             print(f'Round {iteration + 1} training ends!')
             print('-' * 64 + f' Total Time Elapsed: {time.time() - start_time} ' + '-' * 64)
@@ -940,7 +975,7 @@ class HrlPPO:
         upper_callback.on_training_end()
 
     def load_agent(self, env: gym.Env = None, agent_name: str = None, model_path: str = None):
-        assert env is not None,        'Env can not be None!'
+        assert env is not None, 'Env can not be None!'
         assert agent_name is not None, 'Agent name can not be None!'
         assert model_path is not None, 'Model path can not be None!'
         agent_name_list = ['lower', 'upper']
