@@ -280,6 +280,7 @@ class CombinedExtractor(BaseFeaturesExtractor):
 class HybridExtractor(BaseFeaturesExtractor):
     def __init__(self, observation_space: gym.spaces.Dict,
                  cube_shape: list = None,
+                 physical_dim: int = None,
                  ):
 
         super(HybridExtractor, self).__init__(observation_space, features_dim=1)
@@ -288,7 +289,7 @@ class HybridExtractor(BaseFeaturesExtractor):
         self.cube_len = th.prod(th.as_tensor(self.cube_shape))
         self.n_input_channels = 1
         self.cube_latent_dim = 768
-        self.physical_dim = 25 + 3 + 3
+        self.physical_dim = 25 + 3 + 3 if physical_dim is None else physical_dim
         self.embedding_dim = 64
         self.n_input_channels = 1
 
