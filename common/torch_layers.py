@@ -371,74 +371,14 @@ class HybridExtractor(BaseFeaturesExtractor):
 
 
 # DIY
-class HybridUpperExtractor(BaseFeaturesExtractor):
+class HybridUpperExtractor(HybridExtractor):
     def __init__(self, observation_space: gym.spaces.Dict,
                  cube_shape: list = None,
+                 physical_dim: int = None,
                  ):
-
-        super(HybridUpperExtractor, self).__init__(observation_space, features_dim=1)
-
-        self.cube_shape = [25, 35, 17] if cube_shape is None else cube_shape.copy()
-        self.cube_len = th.prod(th.as_tensor(self.cube_shape))
-        self.n_input_channels = 1
-        self.cube_latent_dim = 768
-        self.embedding_dim = 64
-        self.n_input_channels = 1
-
-        self.cnn = nn.Sequential(
-            nn.Conv3d(self.n_input_channels, 32, kernel_size=(3, 3, 3), stride=(1, 1, 1)),
-            nn.BatchNorm3d(32),
-            nn.ReLU(),
-            nn.MaxPool3d(kernel_size=(1, 2, 2), stride=(1, 2, 2)),
-
-            nn.Conv3d(32, 64, kernel_size=(3, 3, 3), stride=(1, 1, 1)),
-            nn.BatchNorm3d(64),
-            nn.ReLU(),
-            nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2)),
-
-            nn.Conv3d(64, 64, kernel_size=(3, 3, 2), stride=(1, 1, 1)),
-            nn.BatchNorm3d(64),
-            nn.ReLU(),
-            nn.MaxPool3d(kernel_size=(2, 2, 2), stride=(2, 2, 2), padding=(0, 1, 1)),
-
-            nn.Flatten(),
-        )
-
-        self.cnn_linear = nn.Sequential(
-            nn.Linear(self.cube_latent_dim, self.embedding_dim),
-            nn.ReLU()
-        )
-
-        input_dim = self.embedding_dim
-        self._features_dim = input_dim
-
-    def cnn_forward(self, observations: th.Tensor):
-        if len(observations.shape) == 1:
-            observations = observations[None, :]
-        cube_latent = th.reshape(observations, shape=[-1, self.n_input_channels] + self.cube_shape)
-        cube_latent = self.cnn(cube_latent)
-        cube_latent = self.cnn_linear(cube_latent)
-
-        return cube_latent
-
-    def get_tensor_list(self, observation) -> list:
-        tensor_list = []
-        if isinstance(observation, th.Tensor):
-            cube_obs = observation
-            cube_latent = self.cnn_forward(cube_obs)
-            tensor_list.extend([cube_latent])
-        else:
-            raise NotImplemented
-
-        return tensor_list
-
-    def forward(self, observation) -> th.Tensor:
-        tensor_list = self.get_tensor_list(observation)
-        tensor = th.cat(tensor_list, dim=-1)
-
-        latent = tensor
-
-        return latent
+        cube_shape = [25, 35, 17] if cube_shape is None else cube_shape.copy()
+        physical_dim = 25 + 3 if physical_dim is None else physical_dim
+        super(HybridUpperExtractor, self).__init__(observation_space, cube_shape=cube_shape, physical_dim=physical_dim)
 
 
 def get_actor_critic_arch(net_arch: Union[List[int], Dict[str, List[int]]]) -> Tuple[List[int], List[int]]:
