@@ -428,6 +428,8 @@ class HybridPPO(HybridOnPolicyAlgorithm):
         if upper_counting_mode:
             self.upper_info_buffer = deque(maxlen=100)
 
+        self.pretrain_epoch = None
+
     def _setup_model(self) -> None:
         super(HybridPPO, self)._setup_model()
 
@@ -541,6 +543,76 @@ class HybridPPO(HybridOnPolicyAlgorithm):
         if self.clip_range_vf is not None:
             self.logger.record(f"{prefix}train/clip_range_vf", clip_range_vf)
 
+    def value_function_pretrain(
+            self,
+            prefix=None,
+    ) -> float:
+        self.policy.set_training_mode(True)
+        self._update_learning_rate(self.policy.optimizer)
+        clip_range = self.clip_range(self._current_progress_remaining)
+        if self.clip_range_vf is not None:
+            clip_range_vf = self.clip_range_vf(self._current_progress_remaining)
+        entropy_losses = []
+        value_losses = []
+        n_epoch = 0
+        for n_epoch in range(self.n_epochs):
+            critic_loss_list = []
+            for rollout_data in self.rollout_buffer.get(self.batch_size):
+                actions = rollout_data.actions
+                if isinstance(self.action_space, spaces.Discrete):
+                    # Convert discrete action from float to long
+                    actions = rollout_data.actions.long().flatten()
+                # Re-sample the noise matrix because the log_std has changed
+                if self.use_sde:
+                    self.policy.reset_noise(self.batch_size)
+                values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, actions)
+                values = values.flatten()
+                if self.clip_range_vf is None:
+                    # No clipping
+                    values_pred = values
+                else:
+                    # Clip the different between old and new value
+                    # NOTE: this depends on the reward scaling
+                    values_pred = rollout_data.old_values + th.clamp(
+                        values - rollout_data.old_values, -clip_range_vf, clip_range_vf
+                    )
+                # Value loss using the TD(gae_lambda) target
+                value_loss = F.mse_loss(rollout_data.returns, values_pred)
+                value_losses.append(value_loss.item())
+                critic_loss_list.append(value_loss.item())
+                # Entropy loss favor exploration
+                if entropy is None:
+                    # Approximate entropy when no analytical form
+                    entropy_loss = -th.mean(-log_prob)
+                else:
+                    entropy_loss = -th.mean(entropy)
+                entropy_losses.append(entropy_loss.item())
+                loss = self.ent_coef * entropy_loss + self.vf_coef * value_loss
+
+                # Optimization step
+                self.policy.optimizer.zero_grad()
+                loss.backward()
+                # Clip grad norm
+                th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
+                self.policy.optimizer.step()
+
+        self.pretrain_epoch += n_epoch
+        explained_var = explained_variance(self.rollout_buffer.values.flatten(),
+                                           self.rollout_buffer.returns.flatten())
+        # Logs
+        prefix = f'{prefix}' if prefix is not None else ''
+
+        self.logger.record(f"{prefix}pretrain/entropy_loss", np.mean(entropy_losses))
+        self.logger.record(f"{prefix}pretrain/value_loss", np.mean(value_losses))
+        self.logger.record(f"{prefix}pretrain/explained_variance", explained_var)
+        if hasattr(self.policy, "log_std"):
+            self.logger.record(f"{prefix}pretrain/std", th.exp(self.policy.log_std).mean().item())
+        self.logger.record(f"{prefix}pretrain/clip_range", clip_range)
+        if self.clip_range_vf is not None:
+            self.logger.record(f"{prefix}pretrain/clip_range_vf", clip_range_vf)
+
+        return np.mean(value_losses).item()
+
     def learn_one_step(
             self,
             total_timesteps: int,
@@ -560,6 +632,7 @@ class HybridPPO(HybridOnPolicyAlgorithm):
             accumulated_iteration: int = 0,
             accumulated_total_timesteps: int = 0,
             prefix: str = None,
+            fine_tuning_flag: bool = False,
     ) -> "HybridPPO":
         total_timesteps, callback = self._setup_learn(
             total_timesteps, eval_env, callback, eval_freq, n_eval_episodes, eval_log_path, reset_num_timesteps,
@@ -572,6 +645,23 @@ class HybridPPO(HybridOnPolicyAlgorithm):
         success_rate_arr = np.array([0])
         timesteps_arr = np.array([0])
 
+        if fine_tuning_flag:
+            self.pretrain_epoch = 0
+            prev_critic_loss = None
+            curr_critic_loss = None
+            while True:
+                continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer,
+                                                          n_rollout_steps=self.n_steps)
+                if continue_training is False:
+                    break
+
+                if curr_critic_loss is not None:
+                    prev_critic_loss = curr_critic_loss
+                curr_critic_loss = self.value_function_pretrain(prefix=prefix)
+                if prev_critic_loss is not None and abs(curr_critic_loss - prev_critic_loss) < 1e-5:
+                    print(f'Stop pretraining as critic loss no longer drops')
+                    break
+                self.logger.record(f"{prefix}pretrain/n_epoch", self.pretrain_epoch)
         while self.num_timesteps < total_timesteps:
 
             continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer,
