@@ -554,7 +554,7 @@ class HybridPPO(HybridOnPolicyAlgorithm):
             clip_range_vf = self.clip_range_vf(self._current_progress_remaining)
         entropy_losses = []
         value_losses = []
-        n_epoch = 0
+        n_epoch = -1
         for n_epoch in range(self.n_epochs):
             critic_loss_list = []
             for rollout_data in self.rollout_buffer.get(self.batch_size):
@@ -596,12 +596,13 @@ class HybridPPO(HybridOnPolicyAlgorithm):
                 th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                 self.policy.optimizer.step()
 
-        self.pretrain_epoch += n_epoch
+        self.pretrain_epoch += n_epoch + 1
         explained_var = explained_variance(self.rollout_buffer.values.flatten(),
                                            self.rollout_buffer.returns.flatten())
         # Logs
         prefix = f'{prefix}' if prefix is not None else ''
 
+        self.logger.record(f"{prefix}pretrain/n_epoch", self.pretrain_epoch)
         self.logger.record(f"{prefix}pretrain/entropy_loss", np.mean(entropy_losses))
         self.logger.record(f"{prefix}pretrain/value_loss", np.mean(value_losses))
         self.logger.record(f"{prefix}pretrain/explained_variance", explained_var)
@@ -633,6 +634,7 @@ class HybridPPO(HybridOnPolicyAlgorithm):
             accumulated_total_timesteps: int = 0,
             prefix: str = None,
             fine_tuning_flag: bool = False,
+            fine_tuning_kwargs: dict = None,
     ) -> "HybridPPO":
         total_timesteps, callback = self._setup_learn(
             total_timesteps, eval_env, callback, eval_freq, n_eval_episodes, eval_log_path, reset_num_timesteps,
@@ -646,22 +648,34 @@ class HybridPPO(HybridOnPolicyAlgorithm):
         timesteps_arr = np.array([0])
 
         if fine_tuning_flag:
+            stop_criteria_cnt = fine_tuning_kwargs['count']
             self.pretrain_epoch = 0
-            prev_critic_loss = None
-            curr_critic_loss = None
+            critic_loss_list = []
+            prev_loss_mean = None
+            curr_loss_mean = None
             while True:
                 continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer,
                                                           n_rollout_steps=self.n_steps)
                 if continue_training is False:
                     break
 
-                if curr_critic_loss is not None:
-                    prev_critic_loss = curr_critic_loss
-                curr_critic_loss = self.value_function_pretrain(prefix=prefix)
-                if prev_critic_loss is not None and abs(curr_critic_loss - prev_critic_loss) < 1e-5:
-                    print(f'Stop pretraining as critic loss no longer drops')
-                    break
-                self.logger.record(f"{prefix}pretrain/n_epoch", self.pretrain_epoch)
+                critic_loss = self.value_function_pretrain(prefix=prefix)
+                critic_loss_list.append(critic_loss)
+                if save_interval is not None and self.pretrain_epoch % save_interval == 0:
+                    self.save(save_path + "_pretrain_" + str(self.pretrain_epoch))
+                    self.logger.record(f"{prefix}pretrain/Save Model", self.pretrain_epoch)
+                    self.logger.dump(step=self.pretrain_epoch)
+
+                if self.pretrain_epoch % stop_criteria_cnt == 0:
+                    if prev_loss_mean is None:
+                        prev_loss_mean = np.inf
+                    else:
+                        prev_loss_mean = curr_loss_mean
+                    curr_loss_mean = np.mean(critic_loss_list[-stop_criteria_cnt:])
+                    if curr_loss_mean >= prev_loss_mean:
+                        print(f'Stop pretraining as critic loss no longer drops({prev_loss_mean} -> {curr_loss_mean})')
+                        break
+
         while self.num_timesteps < total_timesteps:
 
             continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer,
@@ -770,7 +784,7 @@ class HybridPPO(HybridOnPolicyAlgorithm):
             maybe_removal_success = info.get('removal_success')
 
             maybe_global_done = info.get('global_done') or (
-                        not info.get('removal_done') and info.get('TimeLimit.truncated', False))
+                    not info.get('removal_done') and info.get('TimeLimit.truncated', False))
             maybe_global_success = info.get('global_success')
 
             if maybe_ep_info is not None:
