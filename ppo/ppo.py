@@ -653,7 +653,8 @@ class HybridPPO(HybridOnPolicyAlgorithm):
             critic_loss_list = []
             prev_loss_mean = None
             curr_loss_mean = None
-            while True:
+            pretrain_finish = False
+            while not pretrain_finish:
                 continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer,
                                                           n_rollout_steps=self.n_steps)
                 if continue_training is False:
@@ -661,20 +662,25 @@ class HybridPPO(HybridOnPolicyAlgorithm):
 
                 critic_loss = self.value_function_pretrain(prefix=prefix)
                 critic_loss_list.append(critic_loss)
-                if save_interval is not None and self.pretrain_epoch % save_interval == 0:
-                    self.save(save_path + "_pretrain_" + str(self.pretrain_epoch))
-                    self.logger.record(f"{prefix}pretrain/Save Model", self.pretrain_epoch)
-                    self.logger.dump(step=self.pretrain_epoch)
+                pretrain_iteration = self.pretrain_epoch // self.n_epochs
 
-                if self.pretrain_epoch % stop_criteria_cnt == 0:
+                if save_interval is not None and pretrain_iteration % save_interval == 0:
+                    self.save(save_path + "_pretrain_" + str(pretrain_iteration))
+                    self.logger.record(f"{prefix}pretrain/Save Model", pretrain_iteration)
+
+                if pretrain_iteration % stop_criteria_cnt == 0:
                     if prev_loss_mean is None:
                         prev_loss_mean = np.inf
                     else:
                         prev_loss_mean = curr_loss_mean
                     curr_loss_mean = np.mean(critic_loss_list[-stop_criteria_cnt:])
+                    self.logger.record(f"{prefix}pretrain/loss_mean", curr_loss_mean)
                     if curr_loss_mean >= prev_loss_mean:
-                        print(f'Stop pretraining as critic loss no longer drops({prev_loss_mean} -> {curr_loss_mean})')
-                        break
+                        print(
+                            f'Stop pretraining as critic loss no longer drops({prev_loss_mean:.2f} -> {curr_loss_mean:.2f})')
+                        pretrain_finish = True
+
+                self.logger.dump(step=pretrain_iteration)
 
         while self.num_timesteps < total_timesteps:
 
