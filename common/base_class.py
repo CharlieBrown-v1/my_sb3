@@ -410,6 +410,7 @@ class BaseAlgorithm(ABC):
             self.ep_info_buffer = deque(maxlen=100)
             self.ep_success_buffer = deque(maxlen=100)
 
+
         if self.action_noise is not None:
             self.action_noise.reset()
 

@@ -413,6 +413,8 @@ class HybridPPO(HybridOnPolicyAlgorithm):
         self.target_kl = target_kl
 
         # DIY
+        self.sb3_info_buffer = deque(maxlen=100)
+
         self.removal_success_buffer = None
         self.global_success_buffer = None
 
@@ -704,11 +706,6 @@ class HybridPPO(HybridOnPolicyAlgorithm):
                                        safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
                     self.logger.record(f"{prefix}rollout/ep_len_mean",
                                        safe_mean([ep_info["l"] for ep_info in self.ep_info_buffer]))
-                    if len(self.ep_success_buffer) > 0:
-                        success_rate_mean = safe_mean(self.ep_success_buffer)
-                        self.logger.record(f"{prefix}rollout/success_rate", success_rate_mean)
-                        success_rate_arr = np.r_[success_rate_arr, success_rate_mean]
-                        timesteps_arr = np.r_[timesteps_arr, accumulated_total_timesteps + self.num_timesteps]
 
                     if self.is_two_stage_env:
                         if len(self.removal_success_buffer) > 0:
@@ -728,8 +725,19 @@ class HybridPPO(HybridOnPolicyAlgorithm):
                                 good_goal_rate = is_good_goal_arr.sum() / is_obstacle_chosen_arr.sum()
                             except ZeroDivisionError:
                                 good_goal_rate = 1
-
                             self.logger.record(f"{prefix}rollout/good goal rate", good_goal_rate)
+
+                if len(self.ep_success_buffer) > 0:
+                    success_rate_mean = safe_mean(self.ep_success_buffer)
+                    self.logger.record(f"{prefix}rollout/success_rate", success_rate_mean)
+                    success_rate_arr = np.r_[success_rate_arr, success_rate_mean]
+                    timesteps_arr = np.r_[timesteps_arr, accumulated_total_timesteps + self.num_timesteps]
+
+                if len(self.sb3_info_buffer) > 0:
+                    key_list = list(self.sb3_info_buffer[0].keys())
+                    for key in key_list:
+                        self.logger.record(f"{prefix}sb3_info/{key}",
+                                           safe_mean([ep_info[key] for ep_info in self.sb3_info_buffer]))
 
                 self.logger.record(f"{prefix}time/fps", fps)
                 self.logger.record(f"{prefix}time/time_elapsed",
@@ -778,6 +786,22 @@ class HybridPPO(HybridOnPolicyAlgorithm):
         )
         return total_timesteps, callback
 
+    def _update_info_buffer(self, infos, dones) -> None:
+        if dones is None:
+            dones = np.array([False] * len(infos))
+
+        for idx, info in enumerate(infos):
+            sb3_info = info.get("sb3_info")
+            maybe_ep_info = info.get("episode")
+            maybe_is_success = info.get("is_success")
+
+            if sb3_info is not None and dones[idx]:
+                self.sb3_info_buffer.extend([sb3_info])
+            if maybe_ep_info is not None:
+                self.ep_info_buffer.extend([maybe_ep_info])
+            if maybe_is_success is not None and dones[idx]:
+                self.ep_success_buffer.append(maybe_is_success)
+
     def _two_stage_env_update_info_buffer(self, infos, dones):
         assert self.removal_success_buffer is not None and self.global_success_buffer is not None
         assert dones is not None
@@ -785,10 +809,8 @@ class HybridPPO(HybridOnPolicyAlgorithm):
         for idx, info in enumerate(infos):
             maybe_ep_info = info.get("episode")
             maybe_is_success = info.get("is_success")
-
             maybe_removal_done = info.get('removal_done') or info.get('TimeLimit.truncated', False)
             maybe_removal_success = info.get('removal_success')
-
             maybe_global_done = info.get('global_done') or (
                     not info.get('removal_done') and info.get('TimeLimit.truncated', False))
             maybe_global_success = info.get('global_success')
