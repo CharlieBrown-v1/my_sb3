@@ -371,6 +371,75 @@ class HybridExtractor(BaseFeaturesExtractor):
 
 
 # DIY
+class RGBExtractor(BaseFeaturesExtractor):
+    def __init__(self, observation_space: gym.spaces.Dict,
+                 object_count: int = 3,
+                 rgb_width: int = 64,
+                 rgb_height: int = 64,
+                 ):
+        super(RGBExtractor, self).__init__(observation_space, features_dim=1)
+
+        self.embedding_dim = 64
+        self.rgb_latent_dim = 3136
+        self.n_input_channels = 3
+        self.object_count = object_count
+        self.rgb_shape = [rgb_width, rgb_height]
+
+        self.cnn = nn.Sequential(
+            nn.Conv2d(self.n_input_channels, 32, kernel_size=(3, 3), stride=(1, 1)),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=(2, 2), stride=(2, 2)),
+
+            nn.Conv2d(32, 64, kernel_size=(3, 3), stride=(1, 1)),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=(2, 2), stride=(2, 2)),
+
+            nn.Conv2d(64, 64, kernel_size=(3, 3), stride=(1, 1)),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=(2, 2), stride=(2, 2), padding=(1, 1)),
+
+            nn.Flatten(),
+        )
+
+        self.cnn_linear = nn.Sequential(
+            nn.Linear(self.rgb_latent_dim, self.embedding_dim),
+            nn.ReLU()
+        )
+
+        input_dim = self.embedding_dim + self.object_count
+        self._features_dim = input_dim
+
+    def cnn_forward(self, observation: dict):
+        observations = observation['observation']
+        if len(observations.shape) == 1:
+            observations = observations[None, :]
+        rgb_latent = th.reshape(observations[:, :-self.object_count], shape=[-1, self.n_input_channels] + self.rgb_shape)
+        rgb_latent = self.cnn(rgb_latent)
+        
+        # print(f'rgb latent shape: {rgb_latent.shape}')
+        
+        rgb_latent = self.cnn_linear(rgb_latent)
+        onehot_latent = observations[:, -self.object_count:]
+        
+        # print(f'rgb_latent shape: {rgb_latent.shape}')
+        # print(f'onehot_latent shape: {onehot_latent.shape}')
+
+        return rgb_latent, onehot_latent
+
+    def forward(self, observation) -> th.Tensor:
+        rgb_latent, onehot_latent = self.cnn_forward(observation)
+        
+        latent = th.cat((rgb_latent, onehot_latent), dim=-1)
+        
+        # print(f'latent shape: {latent.shape}')
+
+        return latent
+
+
+# DIY
 class HybridUpperExtractor(HybridExtractor):
     def __init__(self, observation_space: gym.spaces.Dict,
                  cube_shape: list = None,
